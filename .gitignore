@@ -1,4 +1,6 @@
 downloaded_data
+models
+outputs
 *.err
 wandb/
 
