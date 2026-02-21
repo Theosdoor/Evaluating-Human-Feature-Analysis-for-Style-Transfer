@@ -26,6 +26,7 @@ import shutil
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +281,8 @@ def classify_directory(
     summary  = {cls: 0 for cls in CLASSES}
 
     # Process in batches
-    for batch_start in range(0, len(image_paths), batch_size):
+    total_batches = (len(image_paths) + batch_size - 1) // batch_size
+    for batch_start in tqdm(range(0, len(image_paths), batch_size), total=total_batches, desc="Pose classification", unit="batch"):
         batch_paths = image_paths[batch_start: batch_start + batch_size]
 
         # Run pose estimation on the whole batch in one call
@@ -303,9 +305,6 @@ def classify_directory(
             if copy_files:
                 dst = os.path.join(output_dir, cls, fname)
                 shutil.copy(img_path, dst)
-
-        done = min(batch_start + batch_size, len(image_paths))
-        print(f"  Classified {done}/{len(image_paths)} ...", end='\r')
 
     print(f"\nDone. Distribution: { {k: v for k, v in summary.items() if v > 0} }")
     return results, summary

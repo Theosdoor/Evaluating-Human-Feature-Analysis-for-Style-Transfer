@@ -11,6 +11,7 @@ Human patch extraction pipeline.
 import os
 import cv2
 import numpy as np
+from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
@@ -62,71 +63,77 @@ def extract_humans_from_video(
     if not cap.isOpened():
         raise IOError(f"Cannot open video: {video_path}")
 
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
     frame_count = 0
     last_yolo_frame = -yolo_interval
     prev_gray = None
     detections = []
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
+    progress_total = total_frames if total_frames > 0 else None
+    with tqdm(total=progress_total, desc=f"Extracting {os.path.basename(video_path)}", unit="frame") as pbar:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        diff = frame_difference(prev_gray, curr_gray)
-        prev_gray = curr_gray
+            curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            diff = frame_difference(prev_gray, curr_gray)
+            prev_gray = curr_gray
 
-        # Only run YOLO if enough frames have passed AND scene has changed
-        frames_since_yolo = frame_count - last_yolo_frame
-        if frames_since_yolo < yolo_interval or diff < scene_change_threshold:
-            frame_count += 1
-            continue
-
-        last_yolo_frame = frame_count
-        frame_h, frame_w = frame.shape[:2]
-        img_area = frame_h * frame_w
-
-        results = model(frame, classes=[0], verbose=False)  # class 0 = person
-
-        for result in results:
-            if result.boxes is None:
+            # Only run YOLO if enough frames have passed AND scene has changed
+            frames_since_yolo = frame_count - last_yolo_frame
+            if frames_since_yolo < yolo_interval or diff < scene_change_threshold:
+                frame_count += 1
+                pbar.update(1)
                 continue
-            for box in result.boxes:
-                conf = float(box.conf)
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
 
-                # Clamp to frame bounds
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(frame_w, x2), min(frame_h, y2)
+            last_yolo_frame = frame_count
+            frame_h, frame_w = frame.shape[:2]
+            img_area = frame_h * frame_w
 
-                if x2 <= x1 or y2 <= y1:
+            results = model(frame, classes=[0], verbose=False)  # class 0 = person
+
+            for result in results:
+                if result.boxes is None:
                     continue
+                for box in result.boxes:
+                    conf = float(box.conf)
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
 
-                patch = frame[y1:y2, x1:x2]
-                blur = compute_blur_score(patch)
-                area = (x2 - x1) * (y2 - y1)
-                relative_area = area / img_area
+                    # Clamp to frame bounds
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(frame_w, x2), min(frame_h, y2)
 
-                # Compute centering score inline
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
-                dist = np.sqrt((center_x - frame_w / 2) ** 2 + (center_y - frame_h / 2) ** 2)
-                max_dist = np.sqrt((frame_w / 2) ** 2 + (frame_h / 2) ** 2)
-                centering = 1.0 - dist / max_dist
+                    if x2 <= x1 or y2 <= y1:
+                        continue
 
-                detections.append({
-                    'video_path': video_path,
-                    'frame_num': frame_count,
-                    'confidence': conf,
-                    'bbox': (x1, y1, x2, y2),
-                    'area': area,
-                    'relative_area': relative_area,
-                    'blur_score': blur,
-                    'blur_thresh': blur_thresh,
-                    'centering': centering,
-                })
+                    patch = frame[y1:y2, x1:x2]
+                    blur = compute_blur_score(patch)
+                    area = (x2 - x1) * (y2 - y1)
+                    relative_area = area / img_area
 
-        frame_count += 1
+                    # Compute centering score inline
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+                    dist = np.sqrt((center_x - frame_w / 2) ** 2 + (center_y - frame_h / 2) ** 2)
+                    max_dist = np.sqrt((frame_w / 2) ** 2 + (frame_h / 2) ** 2)
+                    centering = 1.0 - dist / max_dist
+
+                    detections.append({
+                        'video_path': video_path,
+                        'frame_num': frame_count,
+                        'confidence': conf,
+                        'bbox': (x1, y1, x2, y2),
+                        'area': area,
+                        'relative_area': relative_area,
+                        'blur_score': blur,
+                        'blur_thresh': blur_thresh,
+                        'centering': centering,
+                    })
+
+            frame_count += 1
+            pbar.update(1)
 
     cap.release()
     return detections
@@ -195,7 +202,7 @@ def diverse_sampling(detections, target_count=1000, temporal_gap=30):
     selected = []
     last_frame_per_source = {}
 
-    for det in detections:
+    for det in tqdm(detections, desc="Selecting diverse detections", unit="det"):
         if len(selected) >= target_count:
             break
 
@@ -228,7 +235,7 @@ def save_patches(detections, output_dir):
         by_video.setdefault(det['video_path'], []).append((i, det))
 
     saved = 0
-    for video_path, items in by_video.items():
+    for video_path, items in tqdm(by_video.items(), desc="Saving patches by source", unit="video"):
         # Sort by frame number for sequential seeking
         items_sorted = sorted(items, key=lambda x: x[1]['frame_num'])
 
@@ -238,7 +245,7 @@ def save_patches(detections, output_dir):
             continue
 
         current_frame = 0
-        for idx, det in items_sorted:
+        for idx, det in tqdm(items_sorted, desc=f"Patches {os.path.basename(video_path)}", unit="patch", leave=False):
             target_frame = det['frame_num']
 
             # Seek forward (avoid rewinding if possible)
