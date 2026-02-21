@@ -1,7 +1,7 @@
 # ACV Cswk
 
 Paper requirements
-- Please be explicit inyour reports about the hardware you used to train your model, and the time it took
+- Please be explicit in your reports about the hardware you used to train your model, and the time it took
 - Can use others' code but have to do novel adaptiation; bad results but high orginality >> good results with no originality
 - can use external datasets / pretrained models if you want - provided you cite them!
 

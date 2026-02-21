@@ -4,8 +4,8 @@
 # %%
 import os
 import sys
-IN_COLAB = "google.colab" in sys.modules
 
+IN_COLAB = "google.colab" in sys.modules
 if IN_COLAB:
     # install deps from pyproject.toml
     url = "https://raw.githubusercontent.com/Theosdoor/ACV_cswk/refs/heads/main/pyproject.toml?token=GHSAT0AAAAAADMXCD2D27EMDM3ERVBN5GE62MOA47A"
@@ -13,12 +13,15 @@ if IN_COLAB:
     !uv pip install --system -r pyproject.toml
 
 import time
-from pathlib import Path
+import glob
+import shutil
 import numpy as np
 import cv2
+import torch
 from ultralytics import YOLO # https://github.com/ultralytics/ultralytics
 
 from src.feat_extract import *
+from src.classification import *
 
 DATA_DIR = "downloaded_data" # name of dir where downloaded videos are
 TRAIN_PATHS = [
@@ -33,26 +36,42 @@ TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
 
 
 # %%
-if __name__ == "__main__":
-    video_path = "downloaded_data/Train/movie/TheGodfather.mp4"
-    save_path = f"output/extracted_humans/{time.strftime('%Y%m%d-%H%M%S')}"
+# 1.1. Human Patch Extraction
+# if __name__ == "__main__":
+extract_save_path = f"output/extracted_humans/{time.strftime('%Y%m%d-%H%M%S')}"
 
-    model = YOLO('models/yolov8n.pt')
-    n2save = 1000
+model = YOLO('models/yolov8n.pt')
+n2save = 1000
 
-    detections = extract_humans_from_video(model, video_path)
+detections = []
+for path in TRAIN_PATHS:
+    detections += extract_humans_from_video(model, path)
 
-    # Score all detections
-    for det in detections:
-        det['score'] = score_detection(det)
-    detections_sorted = sorted(detections, key=lambda x: x['score'], reverse=True)
+# Score all detections
+for det in detections:
+    det['score'] = score_detection(det)
+detections_sorted = sorted(detections, key=lambda x: x['score'], reverse=True)
 
-    selected_detections = diverse_sampling(detections_sorted, target_count=n2save)
+selected_detections = diverse_sampling(detections_sorted, target_count=n2save)
 
-    save_patches(selected_detections, save_path) 
-    # 50 to submit (do once we've got good results)
+save_patches(selected_detections, extract_save_path) 
+# 50 to submit (do once we've got good results)
 
 
 # %%
+# 1.2. Classification
+cls_input_path = extract_save_path
+cls_save_path = f"output/classifications/{time.strftime('%Y%m%d-%H%M%S')}"
 
+pose_model = YOLO('models/yolov8n-pose.pt')
+
+results, summary = classify_directory(
+    pose_model,
+    input_dir=cls_input_path,
+    output_dir=cls_save_path,
+    batch_size=32,
+    copy_files=True,
+)
+
+print(summary)
 

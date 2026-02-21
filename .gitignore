@@ -1,6 +1,8 @@
 downloaded_data
 models
 outputs
+cswk_notes
+
 *.err
 wandb/
 
