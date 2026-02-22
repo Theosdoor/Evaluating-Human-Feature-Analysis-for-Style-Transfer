@@ -6,11 +6,15 @@ Human patch extraction pipeline.
 - Computes blur score inline during extraction, before discarding the frame
 - Per-source temporal gap enforcement in diverse_sampling (O(n) not O(n²))
 - Frame change detection to skip near-duplicate frames before running YOLO
+- GPU batched YOLO inference: buffers `yolo_batch_size` eligible frames then
+  runs a single model call, keeping the 2080 Ti feed efficiently
+- Async patch saving via ThreadPoolExecutor to overlap disk I/O with work
 """
 
 import os
 import cv2
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 
@@ -34,6 +38,56 @@ def compute_blur_score(patch):
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
+def _process_batch(model, frame_batch, frame_meta, img_area, blur_thresh, video_path):
+    """
+    Run YOLO on a batch of frames and return detection dicts.
+
+    frame_batch : list of BGR numpy arrays
+    frame_meta  : list of (frame_count,) tuples aligned with frame_batch
+    """
+    detections = []
+    results = model(frame_batch, classes=[0], verbose=False)
+
+    for batch_idx, (result, (frame_count,)) in enumerate(zip(results, frame_meta)):
+        if result.boxes is None:
+            continue
+        frame_h, frame_w = result.orig_shape
+        for box in result.boxes:
+            conf = float(box.conf)
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(frame_w, x2), min(frame_h, y2)
+
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            patch = frame_batch[batch_idx][y1:y2, x1:x2]
+            blur = compute_blur_score(patch)
+            area = (x2 - x1) * (y2 - y1)
+            relative_area = area / img_area
+
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            dist = np.sqrt((center_x - frame_w / 2) ** 2 + (center_y - frame_h / 2) ** 2)
+            max_dist = np.sqrt((frame_w / 2) ** 2 + (frame_h / 2) ** 2)
+            centering = 1.0 - dist / max_dist
+
+            detections.append({
+                'video_path': video_path,
+                'frame_num': frame_count,
+                'confidence': conf,
+                'bbox': (x1, y1, x2, y2),
+                'area': area,
+                'relative_area': relative_area,
+                'blur_score': blur,
+                'blur_thresh': blur_thresh,
+                'centering': centering,
+            })
+
+    return detections
+
+
 def extract_humans_from_video(
     model,
     video_path,
@@ -41,18 +95,23 @@ def extract_humans_from_video(
     scene_change_threshold=8.0,
     blur_threshold_film=40.0,
     blur_threshold_game=100.0,
+    yolo_batch_size=8,
 ):
     """
     Extract human detections from a video file.
 
+    GPU speedup — batched YOLO calls:
+      Instead of running model(frame) once per frame, eligible frames are
+      buffered until `yolo_batch_size` are ready, then dispatched as one
+      model(batch) call.  This keeps the 2080 Ti feed efficiently without
+      holding many frames in RAM simultaneously.
+
     Uses two-stage frame filtering:
       1. Skip frames where inter-frame difference is below scene_change_threshold
-         (avoids processing near-duplicate frames)
       2. Run YOLO every `yolo_interval` frames at minimum
 
-    Blur is scored inline per-patch so we don't need to store frames.
-    Film footage tends to have grain/motion blur, so the threshold is lower
-    than for clean game footage — inferred from filename.
+    Blur is scored inline per-patch so we don't need to store full frames.
+    Film footage threshold is lower than game footage (inferred from filename).
 
     Returns a list of detection dicts (no raw frame data stored).
     """
@@ -64,11 +123,25 @@ def extract_humans_from_video(
         raise IOError(f"Cannot open video: {video_path}")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    img_area = frame_h * frame_w
 
     frame_count = 0
     last_yolo_frame = -yolo_interval
     prev_gray = None
     detections = []
+
+    # Batch buffers
+    frame_buf = []   # BGR frames ready for YOLO
+    meta_buf  = []   # (frame_count,) per buffered frame
+
+    def flush_batch():
+        if not frame_buf:
+            return
+        detections.extend(_process_batch(model, frame_buf, meta_buf, img_area, blur_thresh, video_path))
+        frame_buf.clear()
+        meta_buf.clear()
 
     progress_total = total_frames if total_frames > 0 else None
     with tqdm(total=progress_total, desc=f"Extracting {os.path.basename(video_path)}", unit="frame") as pbar:
@@ -81,60 +154,20 @@ def extract_humans_from_video(
             diff = frame_difference(prev_gray, curr_gray)
             prev_gray = curr_gray
 
-            # Only run YOLO if enough frames have passed AND scene has changed
             frames_since_yolo = frame_count - last_yolo_frame
-            if frames_since_yolo < yolo_interval or diff < scene_change_threshold:
-                frame_count += 1
-                pbar.update(1)
-                continue
+            if frames_since_yolo >= yolo_interval and diff >= scene_change_threshold:
+                last_yolo_frame = frame_count
+                frame_buf.append(frame.copy())
+                meta_buf.append((frame_count,))
 
-            last_yolo_frame = frame_count
-            frame_h, frame_w = frame.shape[:2]
-            img_area = frame_h * frame_w
-
-            results = model(frame, classes=[0], verbose=False)  # class 0 = person
-
-            for result in results:
-                if result.boxes is None:
-                    continue
-                for box in result.boxes:
-                    conf = float(box.conf)
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-
-                    # Clamp to frame bounds
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(frame_w, x2), min(frame_h, y2)
-
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-
-                    patch = frame[y1:y2, x1:x2]
-                    blur = compute_blur_score(patch)
-                    area = (x2 - x1) * (y2 - y1)
-                    relative_area = area / img_area
-
-                    # Compute centering score inline
-                    center_x = (x1 + x2) / 2
-                    center_y = (y1 + y2) / 2
-                    dist = np.sqrt((center_x - frame_w / 2) ** 2 + (center_y - frame_h / 2) ** 2)
-                    max_dist = np.sqrt((frame_w / 2) ** 2 + (frame_h / 2) ** 2)
-                    centering = 1.0 - dist / max_dist
-
-                    detections.append({
-                        'video_path': video_path,
-                        'frame_num': frame_count,
-                        'confidence': conf,
-                        'bbox': (x1, y1, x2, y2),
-                        'area': area,
-                        'relative_area': relative_area,
-                        'blur_score': blur,
-                        'blur_thresh': blur_thresh,
-                        'centering': centering,
-                    })
+                if len(frame_buf) >= yolo_batch_size:
+                    flush_batch()
 
             frame_count += 1
             pbar.update(1)
 
+    # Process any remaining frames in the buffer
+    flush_batch()
     cap.release()
     return detections
 
@@ -162,7 +195,6 @@ def score_detection(det):
     # 2. Relative size — soft penalty outside [0.04, 0.45]
     ra = det['relative_area']
     if 0.04 <= ra <= 0.45:
-        # Peak score at ~0.15 relative area
         size_score = 1.0 - abs(ra - 0.15) / 0.30
         score += max(0.0, size_score) * 0.25
 
@@ -178,7 +210,6 @@ def score_detection(det):
     w, h = x2 - x1, y2 - y1
     if w > 0:
         ar = h / w
-        # Reward ratios roughly in [1.5, 3.5]
         if ar >= 1.0:
             ar_score = min((ar - 1.0) / 2.5, 1.0)
             score += ar_score * 0.10
@@ -220,12 +251,39 @@ def diverse_sampling(detections, target_count=1000, temporal_gap=30):
 # Saving
 # ---------------------------------------------------------------------------
 
-def save_patches(detections, output_dir):
+def _write_patch(args):
+    """Worker function: crop + save a single patch. Used by ThreadPoolExecutor."""
+    frame, det, idx, output_dir = args
+    x1, y1, x2, y2 = det['bbox']
+    patch = frame[y1:y2, x1:x2]
+    if patch.size == 0:
+        return False
+
+    video_path = det['video_path']
+    source_tag = os.path.splitext(os.path.basename(video_path))[0]
+    filename = (
+        f"human_{idx:04d}_{source_tag}"
+        f"_f{det['frame_num']:06d}"
+        f"_conf{det['confidence']:.2f}"
+        f"_score{det['score']:.2f}.jpg"
+    )
+    cv2.imwrite(
+        os.path.join(output_dir, filename),
+        patch,
+        [cv2.IMWRITE_JPEG_QUALITY, 92],
+    )
+    return True
+
+
+def save_patches(detections, output_dir, io_workers=4):
     """
     Crop and save patches by re-reading from source video.
 
     Groups detections by video_path to minimise the number of times each
     video is opened — one sequential pass per source file.
+
+    Patch writes are dispatched to a ThreadPoolExecutor (io_workers threads)
+    so disk I/O overlaps with frame seeking, hiding write latency.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -235,53 +293,42 @@ def save_patches(detections, output_dir):
         by_video.setdefault(det['video_path'], []).append((i, det))
 
     saved = 0
-    for video_path, items in tqdm(by_video.items(), desc="Saving patches by source", unit="video"):
-        # Sort by frame number for sequential seeking
-        items_sorted = sorted(items, key=lambda x: x[1]['frame_num'])
+    with ThreadPoolExecutor(max_workers=io_workers) as executor:
+        for video_path, items in tqdm(by_video.items(), desc="Saving patches by source", unit="video"):
+            items_sorted = sorted(items, key=lambda x: x[1]['frame_num'])
 
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            print(f"Warning: could not open {video_path} for saving patches")
-            continue
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                print(f"Warning: could not open {video_path} for saving patches")
+                continue
 
-        current_frame = 0
-        for idx, det in tqdm(items_sorted, desc=f"Patches {os.path.basename(video_path)}", unit="patch", leave=False):
-            target_frame = det['frame_num']
+            futures = []
+            current_frame = 0
+            for idx, det in tqdm(items_sorted, desc=f"Patches {os.path.basename(video_path)}", unit="patch", leave=False):
+                target_frame = det['frame_num']
 
-            # Seek forward (avoid rewinding if possible)
-            if target_frame < current_frame:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-                current_frame = target_frame
+                if target_frame < current_frame:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                    current_frame = target_frame
 
-            while current_frame < target_frame:
-                cap.grab()
+                while current_frame < target_frame:
+                    cap.grab()
+                    current_frame += 1
+
+                ret, frame = cap.read()
+                if not ret:
+                    continue
                 current_frame += 1
 
-            ret, frame = cap.read()
-            if not ret:
-                continue
-            current_frame += 1
+                # Submit write to thread pool (frame copy is cheap vs disk write)
+                futures.append(executor.submit(_write_patch, (frame.copy(), det, idx, output_dir)))
 
-            x1, y1, x2, y2 = det['bbox']
-            patch = frame[y1:y2, x1:x2]
-            if patch.size == 0:
-                continue
+            cap.release()
 
-            source_tag = os.path.splitext(os.path.basename(video_path))[0]
-            filename = (
-                f"human_{idx:04d}_{source_tag}"
-                f"_f{det['frame_num']:06d}"
-                f"_conf{det['confidence']:.2f}"
-                f"_score{det['score']:.2f}.jpg"
-            )
-            cv2.imwrite(
-                os.path.join(output_dir, filename),
-                patch,
-                [cv2.IMWRITE_JPEG_QUALITY, 92],
-            )
-            saved += 1
-
-        cap.release()
+            # Collect results for this video (keeps memory bounded)
+            for f in as_completed(futures):
+                if f.result():
+                    saved += 1
 
     print(f"Saved {saved} patches to {output_dir}")
     return saved
