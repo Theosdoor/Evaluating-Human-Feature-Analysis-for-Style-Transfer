@@ -64,7 +64,7 @@ save_patches(selected_detections, extract_save_path)
 cls_input_path = extract_save_path
 cls_save_path = f"output/classifications/{time.strftime('%Y%m%d-%H%M%S')}"
 
-pose_model = YOLO('models/yolov26m-pose.pt')
+pose_model = YOLO('models/yolo26m-pose.pt')
 
 results, summary = classify_directory(
     pose_model,
@@ -76,3 +76,5 @@ results, summary = classify_directory(
 
 print(summary)
 
+
+# %%
