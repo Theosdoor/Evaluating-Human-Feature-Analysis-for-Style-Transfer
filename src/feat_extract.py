@@ -4,10 +4,12 @@ feat_extract.py
 Human patch extraction pipeline.
 - Stores video_path + frame_num instead of raw frames to avoid memory blowout
 - Computes blur score inline during extraction, before discarding the frame
+- Caches cropped patch in detection dict to eliminate the second video pass in save_patches
 - Per-source temporal gap enforcement in diverse_sampling (O(n) not O(n²))
 - Frame change detection to skip near-duplicate frames before running YOLO
 - GPU batched YOLO inference: buffers `yolo_batch_size` eligible frames then
   runs a single model call, keeping the 2080 Ti feed efficiently
+- cap.grab() (no decode) used for frames deep inside the yolo_interval gap
 - Async patch saving via ThreadPoolExecutor to overlap disk I/O with work
 """
 
@@ -46,7 +48,8 @@ def _process_batch(model, frame_batch, frame_meta, img_area, blur_thresh, video_
     frame_meta  : list of (frame_count,) tuples aligned with frame_batch
     """
     detections = []
-    results = model(frame_batch, classes=[0], verbose=False)
+    half = 'cuda' in str(model.device)  # use fp16 on GPU
+    results = model(frame_batch, classes=[0], verbose=False, half=half)
 
     for batch_idx, (result, (frame_count,)) in enumerate(zip(results, frame_meta)):
         if result.boxes is None:
@@ -83,6 +86,7 @@ def _process_batch(model, frame_batch, frame_meta, img_area, blur_thresh, video_
                 'blur_score': blur,
                 'blur_thresh': blur_thresh,
                 'centering': centering,
+                'patch': patch.copy(),  # cached crop — avoids second video pass
             })
 
     return detections
@@ -146,6 +150,18 @@ def extract_humans_from_video(
     progress_total = total_frames if total_frames > 0 else None
     with tqdm(total=progress_total, desc=f"Extracting {os.path.basename(video_path)}", unit="frame") as pbar:
         while cap.isOpened():
+            frames_since_yolo = frame_count - last_yolo_frame
+
+            # If we're deep inside the interval gap, skip decoding entirely.
+            # We lose diff-check continuity for those frames but avoid decode cost.
+            skip_ahead = max(0, yolo_interval - frames_since_yolo - 2)
+            if skip_ahead > 0 and prev_gray is not None:
+                for _ in range(skip_ahead):
+                    if not cap.grab():
+                        break
+                frame_count += skip_ahead
+                pbar.update(skip_ahead)
+
             ret, frame = cap.read()
             if not ret:
                 break
@@ -240,7 +256,7 @@ def diverse_sampling(detections, target_count=1000, temporal_gap=30):
         source = det['video_path']
         last = last_frame_per_source.get(source, -(temporal_gap + 1))
 
-        if (det['frame_num'] - last) >= temporal_gap:
+        if abs(det['frame_num'] - last) >= temporal_gap:
             selected.append(det)
             last_frame_per_source[source] = det['frame_num']
 
@@ -254,9 +270,13 @@ def diverse_sampling(detections, target_count=1000, temporal_gap=30):
 def _write_patch(args):
     """Worker function: crop + save a single patch. Used by ThreadPoolExecutor."""
     frame, det, idx, output_dir = args
-    x1, y1, x2, y2 = det['bbox']
-    patch = frame[y1:y2, x1:x2]
-    if patch.size == 0:
+    # Use pre-cached patch if available (fast path — no video re-read needed)
+    if det.get('patch') is not None:
+        patch = det['patch']
+    else:
+        x1, y1, x2, y2 = det['bbox']
+        patch = frame[y1:y2, x1:x2]
+    if patch is None or patch.size == 0:
         return False
 
     video_path = det['video_path']
@@ -277,58 +297,72 @@ def _write_patch(args):
 
 def save_patches(detections, output_dir, io_workers=4):
     """
-    Crop and save patches by re-reading from source video.
+    Save patches to disk.
 
-    Groups detections by video_path to minimise the number of times each
-    video is opened — one sequential pass per source file.
+    Fast path: if detections carry a 'patch' key (set during extraction),
+    patches are written directly without re-opening any video file.
 
-    Patch writes are dispatched to a ThreadPoolExecutor (io_workers threads)
-    so disk I/O overlaps with frame seeking, hiding write latency.
+    Fallback: re-reads source videos sequentially for any detections that
+    lack a cached patch (e.g. loaded from a previous run's metadata).
+
+    Writes are dispatched to a ThreadPoolExecutor to overlap disk I/O.
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # Group by source video
-    by_video = {}
-    for i, det in enumerate(detections):
-        by_video.setdefault(det['video_path'], []).append((i, det))
+    cached   = [(i, d) for i, d in enumerate(detections) if d.get('patch') is not None]
+    uncached = [(i, d) for i, d in enumerate(detections) if d.get('patch') is None]
 
     saved = 0
     with ThreadPoolExecutor(max_workers=io_workers) as executor:
-        for video_path, items in tqdm(by_video.items(), desc="Saving patches by source", unit="video"):
-            items_sorted = sorted(items, key=lambda x: x[1]['frame_num'])
-
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                print(f"Warning: could not open {video_path} for saving patches")
-                continue
-
-            futures = []
-            current_frame = 0
-            for idx, det in tqdm(items_sorted, desc=f"Patches {os.path.basename(video_path)}", unit="patch", leave=False):
-                target_frame = det['frame_num']
-
-                if target_frame < current_frame:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-                    current_frame = target_frame
-
-                while current_frame < target_frame:
-                    cap.grab()
-                    current_frame += 1
-
-                ret, frame = cap.read()
-                if not ret:
-                    continue
-                current_frame += 1
-
-                # Submit write to thread pool (frame copy is cheap vs disk write)
-                futures.append(executor.submit(_write_patch, (frame.copy(), det, idx, output_dir)))
-
-            cap.release()
-
-            # Collect results for this video (keeps memory bounded)
+        # --- Fast path: patches already in memory ---
+        if cached:
+            futures = [
+                executor.submit(_write_patch, (None, det, idx, output_dir))
+                for idx, det in tqdm(cached, desc="Writing cached patches", unit="patch")
+            ]
             for f in as_completed(futures):
                 if f.result():
                     saved += 1
+
+        # --- Fallback: re-read videos for uncached detections ---
+        if uncached:
+            by_video = {}
+            for i, det in uncached:
+                by_video.setdefault(det['video_path'], []).append((i, det))
+
+            for video_path, items in tqdm(by_video.items(), desc="Saving patches (video re-read)", unit="video"):
+                items_sorted = sorted(items, key=lambda x: x[1]['frame_num'])
+
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    print(f"Warning: could not open {video_path} for saving patches")
+                    continue
+
+                futures = []
+                current_frame = 0
+                for idx, det in tqdm(items_sorted, desc=f"Patches {os.path.basename(video_path)}", unit="patch", leave=False):
+                    target_frame = det['frame_num']
+
+                    if target_frame < current_frame:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                        current_frame = target_frame
+
+                    while current_frame < target_frame:
+                        cap.grab()
+                        current_frame += 1
+
+                    ret, frame = cap.read()
+                    if not ret:
+                        continue
+                    current_frame += 1
+
+                    futures.append(executor.submit(_write_patch, (frame.copy(), det, idx, output_dir)))
+
+                cap.release()
+
+                for f in as_completed(futures):
+                    if f.result():
+                        saved += 1
 
     print(f"Saved {saved} patches to {output_dir}")
     return saved
