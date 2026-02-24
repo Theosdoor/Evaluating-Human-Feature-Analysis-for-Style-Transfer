@@ -25,6 +25,7 @@ import glob
 import shutil
 from pathlib import Path
 
+import cv2
 import numpy as np
 from tqdm import tqdm
 
@@ -135,9 +136,17 @@ def classify_orientation(keypoints):
     if n_face >= 2:
         front_score += 3.0
     elif n_face == 1:
-        front_score += 1.5
+        front_score += 1.2   # reduced: single keypoint is unreliable
     elif n_face_low >= 1:
         front_score += 0.5
+
+    # Back evidence scaled by how few high-confidence face features are present
+    if n_face_low == 0:
+        back_score += 2.5   # zero face signal at any confidence
+    elif n_face == 0:
+        back_score += 1.5   # only ghost low-confidence keypoints
+    elif n_face == 1:
+        back_score += 0.8   # single stray keypoint — likely background noise
 
     # --- Secondary evidence: nose between shoulders ---
     nose = kp(keypoints, 0)
@@ -162,8 +171,8 @@ def classify_orientation(keypoints):
         # Both ears + both shoulders visible: consistent with front
         front_score += 0.5
     elif ears_visible == 0 and l_shoulder[2] > 0 and r_shoulder[2] > 0:
-        # Neither ear visible with both shoulders: weak back evidence
-        back_score += 0.5
+        # Neither ear visible with both shoulders: back evidence
+        back_score += 1.0
 
     # --- Quaternary: shoulder/hip width ratio ---
     l_hip = kp(keypoints, 11)
@@ -227,9 +236,11 @@ def classify_patch(pose_model, image_path):
     if kp_data.shape[0] == 0:
         return 'others'
 
-    # Use the highest-confidence detection if multiple people present
-    confidences = results[0].boxes.conf.cpu().numpy()
-    best_idx = int(np.argmax(confidences))
+    # Use the largest bounding box — for cropped patches this is the primary
+    # subject, not a smaller background person with a visible frontal face.
+    boxes = results[0].boxes.xyxy.cpu().numpy()  # [N, 4]
+    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    best_idx = int(np.argmax(areas))
 
     keypoints = kp_data[best_idx].cpu().numpy()  # [17, 3]
     return classify_keypoints(keypoints)
@@ -245,6 +256,7 @@ def classify_directory(
     output_dir,
     batch_size=32,
     copy_files=True,
+    save_debug_viz=False,
 ):
     """
     Classify all .jpg/.png files in input_dir using batched inference.
@@ -253,11 +265,12 @@ def classify_directory(
     on a 2080 Ti, batch_size=32 should keep the GPU well-utilised.
 
     Args:
-        pose_model:  YOLOv8 pose model instance
-        input_dir:   directory of cropped human patches
-        output_dir:  root output directory; per-class subdirs created automatically
-        batch_size:  images per inference call
-        copy_files:  if True, copy (not move) patches into class subdirs
+        pose_model:      YOLOv8 pose model instance
+        input_dir:       directory of cropped human patches
+        output_dir:      root output directory; per-class subdirs created automatically
+        batch_size:      images per inference call
+        copy_files:      if True, copy (not move) patches into class subdirs
+        save_debug_viz:  if True, save YOLO-annotated images to output_dir/debug_viz/
 
     Returns:
         results: dict mapping filename -> class string
@@ -277,6 +290,10 @@ def classify_directory(
         for cls in CLASSES:
             os.makedirs(os.path.join(output_dir, cls), exist_ok=True)
 
+    debug_dir = os.path.join(output_dir, 'debug_viz')
+    if save_debug_viz:
+        os.makedirs(debug_dir, exist_ok=True)
+
     results  = {}
     summary  = {cls: 0 for cls in CLASSES}
 
@@ -294,10 +311,14 @@ def classify_directory(
             if result.keypoints is None or result.keypoints.data.shape[0] == 0:
                 cls = 'others'
             else:
-                confidences = result.boxes.conf.cpu().numpy()
-                best_idx    = int(np.argmax(confidences))
-                keypoints   = result.keypoints.data[best_idx].cpu().numpy()
-                cls         = classify_keypoints(keypoints)
+                # Pick the largest bounding box — for cropped patches this is the
+                # primary subject, not a smaller background person whose face may
+                # have higher detection confidence.
+                boxes = result.boxes.xyxy.cpu().numpy()  # [N, 4]
+                areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+                best_idx  = int(np.argmax(areas))
+                keypoints = result.keypoints.data[best_idx].cpu().numpy()
+                cls       = classify_keypoints(keypoints)
 
             results[fname] = cls
             summary[cls]  += 1
@@ -305,6 +326,10 @@ def classify_directory(
             if copy_files:
                 dst = os.path.join(output_dir, cls, fname)
                 shutil.copy(img_path, dst)
+
+            if save_debug_viz:
+                annotated = result.plot()  # BGR numpy array with boxes + keypoints
+                cv2.imwrite(os.path.join(debug_dir, fname), annotated)
 
     print(f"\nDone. Distribution: { {k: v for k, v in summary.items() if v > 0} }")
     return results, summary

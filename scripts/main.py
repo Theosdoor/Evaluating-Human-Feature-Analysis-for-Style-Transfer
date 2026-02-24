@@ -37,6 +37,12 @@ TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
 SAVE_DIR = os.path.join(PROJECT_ROOT, "output")
 SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
 
+# Set to an existing extraction directory to skip extraction and jump straight
+# to classification.  Leave as None to run the full pipeline.
+# e.g. RELOAD_EXTRACT_PATH = os.path.join(SAVE_DIR, "extracted_humans", "20260224-221543")
+# RELOAD_EXTRACT_PATH = os.path.join(SAVE_DIR, "extracted_humans", "20260224-221543")
+RELOAD_EXTRACT_PATH=None
+
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
@@ -46,36 +52,34 @@ extract_save_path = f"{SAVE_DIR}/extracted_humans/{SAVE_NAME}"
 n2save = 1000
 detection_b_size = 32  # 2080 Ti (11 GB VRAM) comfortably handles 32 frames/batch
 
-# %% 
-model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
-model.to(DEVICE)
-
-# Per-video budget: distribute n2save evenly; remainder goes to last video
-per_video_target = n2save // len(TRAIN_PATHS)
-targets = [per_video_target] * len(TRAIN_PATHS)
-targets[-1] += n2save - sum(targets)  # absorb rounding remainder
-
 detections = []         # all raw detections (for diagnostics)
 selected_detections = []
 
-for path, target in tqdm(zip(TRAIN_PATHS, targets), desc="Processing training videos", unit="video", total=len(TRAIN_PATHS)):
-    video_dets = extract_humans_from_video(model, path, yolo_batch_size=detection_b_size)
+if not RELOAD_EXTRACT_PATH:
+    # %%
+    model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
+    model.to(DEVICE)
 
-    for det in video_dets:
-        det['score'] = score_detection(det)
-    video_dets.sort(key=lambda x: x['score'], reverse=True)
+    # Per-video budget: distribute n2save evenly; remainder goes to last video
+    per_video_target = n2save // len(TRAIN_PATHS)
+    targets = [per_video_target] * len(TRAIN_PATHS)
+    targets[-1] += n2save - sum(targets)  # absorb rounding remainder
 
-    selected = diverse_sampling(video_dets, target_count=target)
-    save_patches(selected, extract_save_path)
+    for path, target in tqdm(zip(TRAIN_PATHS, targets), desc="Processing training videos", unit="video", total=len(TRAIN_PATHS)):
+        video_dets = extract_humans_from_video(model, path, yolo_batch_size=detection_b_size)
 
-    detections += video_dets
-    selected_detections += selected
-# 50 to submit (do once we've got good results)
+        for det in video_dets:
+            det['score'] = score_detection(det)
+        video_dets.sort(key=lambda x: x['score'], reverse=True)
+
+        selected = diverse_sampling(video_dets, target_count=target)
+        save_patches(selected, extract_save_path)
+
+        detections += video_dets
+        selected_detections += selected
+    # 50 to submit (do once we've got good results)
 
 # %%
-RELOAD_EXTRACT_PATH = SAVE_DIR + "/extracted_humans/" + "20260224-221543"
-# RELOAD_EXTRACT_PATH = extract_save_path
-
 if RELOAD_EXTRACT_PATH:
     import re
     extract_save_path = RELOAD_EXTRACT_PATH
@@ -105,7 +109,7 @@ else:
 # %%
 # 1.2. Classification
 cls_input_path = extract_save_path
-cls_save_path = f"{SAVE_DIR}/classifications/{SAVE_NAME}"
+cls_save_path = os.path.join(SAVE_DIR, "classifications", os.path.basename(extract_save_path))
 classify_b_size = 32
 
 pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26l-pose.pt'))
@@ -117,6 +121,7 @@ results, summary = classify_directory(
     output_dir=cls_save_path,
     batch_size=classify_b_size,
     copy_files=True, # copy files to classifications dir for easy reference next to pose results
+    save_debug_viz=True,  # set True to save YOLO-annotated images to debug_viz/
 )
 
 print(summary)
