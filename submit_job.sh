@@ -17,4 +17,5 @@ python3 -c "import torch; print(f'CUDA Available: {torch.cuda.is_available()}');
 echo "------------------------------------------------------"
 
 # Run the experiments
+# rm -rf output # clear previous outputs
 python3 scripts/main.py
