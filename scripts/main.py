@@ -112,7 +112,7 @@ cls_input_path = extract_save_path
 cls_save_path = os.path.join(SAVE_DIR, "classifications", os.path.basename(extract_save_path))
 classify_b_size = 32
 
-pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26l-pose.pt'))
+pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
 pose_model.to(DEVICE)
 
 results, summary = classify_directory(

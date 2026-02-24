@@ -14,6 +14,8 @@ Apply **movie visual style to game human footage** via unpaired image-to-image t
 
 All written up in final report (see `paper/` folder).
 
+(Full cswk brief at cswk_notes/cswk_brief.txt)
+
 ## Pipeline Architecture
 
 **Two-stage, reference-based design** — detections store `{video_path, frame_num, bbox}` not raw pixels; `save_patches` re-reads videos sequentially to avoid memory blowout.
