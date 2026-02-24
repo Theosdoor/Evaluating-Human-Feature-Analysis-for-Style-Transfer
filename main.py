@@ -5,13 +5,13 @@
 import os
 import sys
 
-# IN_COLAB = "google.colab" in sys.modules
-# if IN_COLAB:
-#     # install deps from pyproject.toml
-#     url = "https://github.com/Theosdoor/ACV_cswk.git"
-#     !git clone {url}
-#     os.chdir("ACV_cswk")
-#     !uv pip install --system -r pyproject.toml
+IN_COLAB = "google.colab" in sys.modules
+if IN_COLAB:
+    # install deps from pyproject.toml
+    url = "https://github.com/Theosdoor/ACV_cswk.git"
+    !git clone {url}
+    os.chdir("ACV_cswk")
+    !uv pip install --system -r pyproject.toml
 
 import time
 import numpy as np
@@ -39,18 +39,13 @@ print(f"Using device: {DEVICE}")
 
 # %%
 # 1.1. Human Patch Extraction
-# if __name__ == "__main__":
 extract_save_path = f"{SAVE_DIR}/extracted_humans/{time.strftime('%Y%m%d-%H%M%S')}"
-
-# .to(DEVICE) ensures the model is on GPU when running under Slurm.
-# Batched YOLO calls (yolo_batch_size) are the main GPU throughput win.
-model = YOLO('models/yolov8m.pt')
-model.to(DEVICE)
 n2save = 1000
 
-# Sequential: Slurm allocates a single GPU, so parallel threads would just
-# serialise at the CUDA level and thrash memory. Batching inside each video
-# call is where the real speedup comes from.
+# %% 
+model = YOLO('models/yolov8m.pt')
+model.to(DEVICE)
+
 detections = []
 for path in tqdm(TRAIN_PATHS, desc="Extracting from training videos", unit="video"):
     detections += extract_humans_from_video(model, path, yolo_batch_size=8)
@@ -65,11 +60,45 @@ selected_detections = diverse_sampling(detections_sorted, target_count=n2save)
 save_patches(selected_detections, extract_save_path)
 # 50 to submit (do once we've got good results)
 
+# %%
+# DEBUG
+# Diagnostic: check extraction yield per video
+print(f"Total raw detections: {len(detections)}")
+print(f"After scoring + sorting: {len(detections_sorted)}")
+print(f"After diverse_sampling: {len(selected_detections)}")
+print()
+
+from collections import Counter
+source_counts = Counter(os.path.basename(d['video_path']) for d in detections)
+print("Raw detections per video:")
+for src, count in source_counts.most_common():
+    print(f"  {src}: {count}")
+
+print()
+score_vals = [d['score'] for d in detections]
+if score_vals:
+    print(f"Score range: {min(score_vals):.3f} – {max(score_vals):.3f}")
+    print(f"Score mean:  {sum(score_vals)/len(score_vals):.3f}")
+
+# %%
+RELOAD_DIR_NAME = "20260222-130433"
+RELOAD_EXTRACT_PATH = f"{SAVE_DIR}/extracted_humans/{RELOAD_DIR_NAME}"
+# RELOAD_EXTRACT_PATH = extract_save_path
+
+if RELOAD_EXTRACT_PATH:
+    extract_save_path = RELOAD_EXTRACT_PATH
+    patch_files = [
+        f for f in os.listdir(extract_save_path)
+        if f.endswith(('.jpg'))
+    ]
+    print(f"Reloaded {len(patch_files)} patches from {extract_save_path}")
+else:
+    print(f"Using freshly-extracted patches from {extract_save_path}")
 
 # %%
 # 1.2. Classification
 cls_input_path = extract_save_path
-cls_save_path = f"{SAVE_DIR}/classifications/{time.strftime('%Y%m%d-%H%M%S')}"
+cls_save_path = extract_save_path.replace("extracted_humans", "classifications")
 
 pose_model = YOLO('models/yolo26m-pose.pt')
 pose_model.to(DEVICE)
