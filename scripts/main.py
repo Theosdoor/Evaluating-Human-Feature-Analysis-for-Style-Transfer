@@ -6,6 +6,10 @@ import os
 import sys
 import subprocess
 
+# Add project root to path for imports
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
 IN_COLAB = "google.colab" in sys.modules
 if IN_COLAB:
     # install deps from pyproject.toml
@@ -24,7 +28,7 @@ from ultralytics import YOLO # https://github.com/ultralytics/ultralytics
 from src.feat_extract import *
 from src.classification import *
 
-DATA_DIR = "downloaded_data" # name of dir where downloaded videos are
+DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
 TRAIN_PATHS = [
     os.path.join(DATA_DIR, "Train/game/MafiaVideogame.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheGodfather.mp4"),
@@ -33,7 +37,7 @@ TRAIN_PATHS = [
 ]
 
 TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
-SAVE_DIR = "output"
+SAVE_DIR = os.path.join(PROJECT_ROOT, "output")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
@@ -44,7 +48,7 @@ extract_save_path = f"{SAVE_DIR}/extracted_humans/{time.strftime('%Y%m%d-%H%M%S'
 n2save = 1000
 
 # %% 
-model = YOLO('models/yolov8m.pt')
+model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
 model.to(DEVICE)
 
 detections = []
@@ -101,7 +105,7 @@ else:
 cls_input_path = extract_save_path
 cls_save_path = extract_save_path.replace("extracted_humans", "classifications")
 
-pose_model = YOLO('models/yolo26m-pose.pt')
+pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
 pose_model.to(DEVICE)
 
 results, summary = classify_directory(
