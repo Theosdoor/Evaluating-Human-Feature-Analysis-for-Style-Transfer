@@ -4,14 +4,15 @@
 # %%
 import os
 import sys
+import subprocess
 
 IN_COLAB = "google.colab" in sys.modules
 if IN_COLAB:
     # install deps from pyproject.toml
     url = "https://github.com/Theosdoor/ACV_cswk.git"
-    !git clone {url}
+    subprocess.run(["git", "clone", url], check=True)
     os.chdir("ACV_cswk")
-    !uv pip install --system -r pyproject.toml
+    subprocess.run(["uv", "pip", "install", "--system", "-r", "pyproject.toml"], check=True)
 
 import time
 import numpy as np
@@ -34,7 +35,7 @@ TRAIN_PATHS = [
 TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
 SAVE_DIR = "output"
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
 # %%
