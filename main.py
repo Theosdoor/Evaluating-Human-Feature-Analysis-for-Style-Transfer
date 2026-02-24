@@ -8,8 +8,9 @@ import sys
 # IN_COLAB = "google.colab" in sys.modules
 # if IN_COLAB:
 #     # install deps from pyproject.toml
-#     url = "https://raw.githubusercontent.com/Theosdoor/ACV_cswk/refs/heads/main/pyproject.toml?token=GHSAT0AAAAAADMXCD2D27EMDM3ERVBN5GE62MOA47A"
-#     !wget -O pyproject.toml {url}
+#     url = "https://github.com/Theosdoor/ACV_cswk.git"
+#     !git clone {url}
+#     os.chdir("ACV_cswk")
 #     !uv pip install --system -r pyproject.toml
 
 import time

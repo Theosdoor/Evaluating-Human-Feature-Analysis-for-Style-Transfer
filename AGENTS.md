@@ -69,3 +69,7 @@ output/
 - Use `tqdm` for all large-iterable loops
 - `score_detection` weights: confidence 0.30, relative area 0.25, sharpness 0.20, centering 0.15, aspect ratio 0.10
 - Async `imwrite` via `ThreadPoolExecutor` in `save_patches` is intentional — disk I/O only, no GPU contention
+
+## Experiment Logging (Required)
+Keep `EXPERIMENTS.md` up to date for reproducibility.
+- When running one-off/manual experiments add a short entry to `EXPERIMENTS.md` with the command, outputs directory, and key results.
