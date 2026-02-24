@@ -30,7 +30,7 @@ from src.classification import *
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
 TRAIN_PATHS = [
-    os.path.join(DATA_DIR, "Train/game/MafiaVideogame.mp4"),
+    # os.path.join(DATA_DIR, "Train/game/MafiaVideogame.mp4"), # TODO v large, so temporarily ignore
     os.path.join(DATA_DIR,"Train/movie/TheGodfather.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheIrishman.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheSopranos.mp4"),
@@ -76,28 +76,8 @@ for path, target in tqdm(zip(TRAIN_PATHS, targets), desc="Processing training vi
 # 50 to submit (do once we've got good results)
 
 # %%
-# DEBUG
-# Diagnostic: check extraction yield per video
-print(f"Total raw detections: {len(detections)}")
-print(f"After diverse_sampling: {len(selected_detections)}")
-print()
-
-from collections import Counter
-source_counts = Counter(os.path.basename(d['video_path']) for d in detections)
-print("Raw detections per video:")
-for src, count in source_counts.most_common():
-    print(f"  {src}: {count}")
-
-print()
-score_vals = [d['score'] for d in detections]
-if score_vals:
-    print(f"Score range: {min(score_vals):.3f} – {max(score_vals):.3f}")
-    print(f"Score mean:  {sum(score_vals)/len(score_vals):.3f}")
-
-# %%
-# RELOAD_DIR_NAME = "20260222-130433"
-# RELOAD_EXTRACT_PATH = f"{SAVE_DIR}/extracted_humans/{RELOAD_DIR_NAME}"
-RELOAD_EXTRACT_PATH = extract_save_path
+RELOAD_EXTRACT_PATH = SAVE_DIR + "/extracted_humans/20260224-213806"
+# RELOAD_EXTRACT_PATH = extract_save_path
 
 if RELOAD_EXTRACT_PATH:
     extract_save_path = RELOAD_EXTRACT_PATH
@@ -112,7 +92,7 @@ else:
 # %%
 # 1.2. Classification
 cls_input_path = extract_save_path
-cls_save_path = extract_save_path.replace("extracted_humans", "classifications")
+cls_save_path = f"{SAVE_DIR}/classifications/{SAVE_NAME}"
 classify_b_size = 32
 
 pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))

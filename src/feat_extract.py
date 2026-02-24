@@ -100,6 +100,7 @@ def extract_humans_from_video(
     blur_threshold_film=40.0,
     blur_threshold_game=100.0,
     yolo_batch_size=8,
+    on_batch=None,
 ):
     """
     Extract human detections from a video file.
@@ -116,6 +117,10 @@ def extract_humans_from_video(
 
     Blur is scored inline per-patch so we don't need to store full frames.
     Film footage threshold is lower than game footage (inferred from filename).
+
+    on_batch: optional callable(new_detections) fired after each YOLO batch
+      flush.  Use this for incremental saving so results appear on disk during
+      extraction rather than only after the full video scan completes.
 
     Returns a list of detection dicts (no raw frame data stored).
     """
@@ -143,9 +148,12 @@ def extract_humans_from_video(
     def flush_batch():
         if not frame_buf:
             return
-        detections.extend(_process_batch(model, frame_buf, meta_buf, img_area, blur_thresh, video_path))
+        new_dets = _process_batch(model, frame_buf, meta_buf, img_area, blur_thresh, video_path)
+        detections.extend(new_dets)
         frame_buf.clear()
         meta_buf.clear()
+        if on_batch and new_dets:
+            on_batch(new_dets)
 
     progress_total = total_frames if total_frames > 0 else None
     with tqdm(total=progress_total, desc=f"Extracting {os.path.basename(video_path)}", unit="frame") as pbar:
