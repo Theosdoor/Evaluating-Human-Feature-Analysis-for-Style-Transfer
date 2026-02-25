@@ -1,7 +1,7 @@
 downloaded_data
 models
 output
-cswk_notes
+cswk_notes/not4git
 
 *.err
 wandb/

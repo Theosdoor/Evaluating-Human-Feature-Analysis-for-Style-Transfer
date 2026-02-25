@@ -1,10 +1,15 @@
 # %%
+# ACV CSWK 2026 - Main Notebook
+# Must be in root directory, and submitted as .ipynb file.
+# Must replicate (within reason), the multimedia files as requested in `cswk_notes/cswk_brief.txt`.
+
+# %%
 import os
 import sys
 import subprocess
 
 # Add project root to path for imports
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
 IN_COLAB = "google.colab" in sys.modules

@@ -61,17 +61,8 @@ output/
 ```
 
 ## Submission Requirements
-- **Jupyter notebook** must stay in root dir and `import` from `src/`
+- **Jupyter notebook** must stay in root dir and `import` from `src/` (`nb_main.py` will be the submission notebook).
 - PDF report + ZIP (notebook + multimedia + optional `.py`/`.sh`)
 - Do **not** include original `.mp4` data files; compress all media
 - Include auto-download lines for any external models/datasets (`wget`, `git clone`)
-
-## Conventions
-- Use `uv add` / `uv remove` for dependencies; never bare `pip install`
-- Use `tqdm` for all large-iterable loops
-- `score_detection` weights: confidence 0.30, relative area 0.25, sharpness 0.20, centering 0.15, aspect ratio 0.10
-- Async `imwrite` via `ThreadPoolExecutor` in `save_patches` is intentional — disk I/O only, no GPU contention
-
-## Experiment Logging (Required)
-Keep `EXPERIMENTS.md` up to date for reproducibility.
-- When running one-off/manual experiments add a short entry to `EXPERIMENTS.md` with the command, outputs directory, and key results.
+- Other scripts besides `nb_main.py` can go into `scripts/`.
