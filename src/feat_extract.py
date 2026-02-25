@@ -14,8 +14,10 @@ Human patch extraction pipeline.
 """
 
 import os
+import time
 import cv2
 import numpy as np
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
@@ -374,3 +376,123 @@ def save_patches(detections, output_dir, io_workers=4):
 
     print(f"Saved {saved} patches to {output_dir}")
     return saved
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+def save_extraction_summary(extract_save_path, detections, selected_detections):
+    """
+    Build, print, and save extraction diagnostics to
+    ``{extract_save_path}/_summary.txt``.
+
+    Works in two modes:
+    - *Fresh run*: ``detections`` is non-empty (full raw + selected stats).
+    - *Reload*: ``detections`` is empty but ``selected_detections`` is non-empty
+      (stats from reloaded filenames only).
+    """
+    lines = []
+    lines.append("=== Extraction Diagnostics ===")
+
+    if len(detections) > 0:
+        lines.append(f"Total raw detections:    {len(detections)}")
+        lines.append(f"After diverse_sampling:  {len(selected_detections)}")
+
+        source_counts = Counter(os.path.basename(d['video_path']) for d in detections)
+        selected_counts = Counter(os.path.basename(d['video_path']) for d in selected_detections)
+        lines.append(f"\n{'Video':<30} {'Raw':>6}  {'Selected':>8}")
+        lines.append("-" * 48)
+        for src, raw in source_counts.most_common():
+            sel = selected_counts.get(src, 0)
+            lines.append(f"{src:<30} {raw:>6}  {sel:>8}")
+
+        score_vals = [d['score'] for d in detections]
+        if score_vals:
+            lines.append(f"\nDetection score stats:")
+            lines.append(f"  min:  {min(score_vals):.3f}")
+            lines.append(f"  max:  {max(score_vals):.3f}")
+            lines.append(f"  mean: {sum(score_vals)/len(score_vals):.3f}")
+
+        blur_vals = [d.get('blur_score') for d in detections if d.get('blur_score') is not None]
+        if blur_vals:
+            lines.append(f"\nBlur score stats (higher = sharper):")
+            lines.append(f"  min:  {min(blur_vals):.1f}")
+            lines.append(f"  max:  {max(blur_vals):.1f}")
+            lines.append(f"  mean: {sum(blur_vals)/len(blur_vals):.1f}")
+
+    elif len(selected_detections) > 0:
+        lines.append("(Extraction skipped; stats from reloaded patch filenames)")
+        lines.append(f"Reloaded patches: {len(selected_detections)}")
+
+        selected_counts = Counter(os.path.basename(d['video_path']) for d in selected_detections)
+        lines.append(f"\n{'Video':<30} {'Patches':>8}")
+        lines.append("-" * 40)
+        for src, count in selected_counts.most_common():
+            lines.append(f"{src:<30} {count:>8}")
+
+        score_vals = [d['score'] for d in selected_detections]
+        if score_vals:
+            lines.append(f"\nScore stats (selected patches):")
+            lines.append(f"  min:  {min(score_vals):.3f}")
+            lines.append(f"  max:  {max(score_vals):.3f}")
+            lines.append(f"  mean: {sum(score_vals)/len(score_vals):.3f}")
+
+    else:
+        lines.append("(No extraction data available)")
+
+    summary_text = "\n".join(lines)
+    print(summary_text)
+
+    os.makedirs(extract_save_path, exist_ok=True)
+    summary_path = os.path.join(extract_save_path, "_summary.txt")
+    with open(summary_path, "w") as f:
+        f.write("Extraction summary\n")
+        f.write(f"Save time: {time.strftime('%Y%m%d-%H%M%S')}\n")
+        f.write(f"Directory: {extract_save_path}\n\n")
+        f.write(summary_text + "\n")
+    print(f"Extraction summary saved to {summary_path}")
+    return summary_path
+
+
+def reload_extracted_patches(extract_save_path, train_paths):
+    """
+    Reconstruct ``selected_detections`` from patch filenames in an existing
+    extraction directory, avoiding a full re-run.
+
+    Parameters
+    ----------
+    extract_save_path : str
+        Path to the extraction directory (e.g. output/extracted_humans/<ts>).
+    train_paths : list[str]
+        Original video paths; used to map source tags back to full paths.
+
+    Returns
+    -------
+    selected_detections : list[dict]
+        Each dict has keys: video_path, frame_num, confidence, score.
+    """
+    import re
+
+    source_tag_to_path = {os.path.splitext(os.path.basename(p))[0]: p for p in train_paths}
+    _pat = re.compile(r'^human_\d+_(.+)_f(\d+)_conf([\d.]+)_score([\d.]+)\.jpg$')
+
+    patch_files = [f for f in os.listdir(extract_save_path) if f.endswith('.jpg')]
+    selected_detections = []
+    for fname in patch_files:
+        m = _pat.match(fname)
+        if m:
+            source_tag, frame_num, conf, score = (
+                m.group(1), int(m.group(2)), float(m.group(3)), float(m.group(4))
+            )
+            video_path = source_tag_to_path.get(source_tag, source_tag)
+            selected_detections.append({
+                'video_path': video_path,
+                'frame_num': frame_num,
+                'confidence': conf,
+                'score': score,
+            })
+
+    print(f"Reloaded {len(patch_files)} patches from {extract_save_path}")
+    print(f"  Parsed {len(selected_detections)} detections from filenames")
+    return selected_detections

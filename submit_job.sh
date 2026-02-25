@@ -18,4 +18,4 @@ echo "------------------------------------------------------"
 
 # Run the experiments
 # rm -rf output # clear previous outputs
-python3 scripts/main.py
+python3 nb_main.py

@@ -451,3 +451,38 @@ def classify_directory(
 
     print(f"\nDone. Distribution: { {k: v for k, v in summary.items() if v > 0} }")
     return results, summary
+
+
+def reload_classification_results(cls_save_path):
+    """
+    Reconstruct ``results`` and ``summary`` from an existing classification
+    directory (the per-class subdirectories written by ``classify_directory``).
+
+    Parameters
+    ----------
+    cls_save_path : str
+        Root classification output directory containing per-class subdirs.
+
+    Returns
+    -------
+    results : dict[str, str]
+        Mapping of filename -> class string.
+    summary : dict[str, int]
+        Mapping of class string -> count.
+    """
+    results = {}
+    summary = {cls: 0 for cls in CLASSES}
+
+    for cls in CLASSES:
+        cls_dir = os.path.join(cls_save_path, cls)
+        if not os.path.isdir(cls_dir):
+            continue
+        for fname in os.listdir(cls_dir):
+            if fname.lower().endswith(('.jpg', '.png')):
+                results[fname] = cls
+                summary[cls] += 1
+
+    total = sum(summary.values())
+    print(f"Reloaded classification results from {cls_save_path}")
+    print(f"  Total: {total}  |  " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
+    return results, summary
