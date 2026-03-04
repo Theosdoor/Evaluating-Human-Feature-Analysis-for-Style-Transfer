@@ -1,11 +1,11 @@
 downloaded_data
 models
 output
-cswk_notes/not4git
 slurm/
 
 *.err
 wandb/
+.vscode/
 
 
 # Byte-compiled / optimized / DLL files
