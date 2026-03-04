@@ -34,7 +34,7 @@ from src.classification import *
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
 TRAIN_PATHS = [
-    # os.path.join(DATA_DIR,"Train/game/MafiaVideogame.mp4"), # TODO v large, so temporarily ignore
+    os.path.join(DATA_DIR,"Train/game/MafiaVideogame.mp4"), # TODO v large, so temporarily ignore
     os.path.join(DATA_DIR,"Train/movie/TheGodfather.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheIrishman.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheSopranos.mp4"),

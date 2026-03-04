@@ -1,5 +1,7 @@
 # ACV Coursework — Copilot Instructions
 
+Use the python skill when writing / planning code in this repo!
+
 ## Project Goal
 Apply **movie visual style to game human footage** via unpaired image-to-image translation (e.g. CycleGAN). Humans are extracted and classified first so style transfer is applied locally (human patches only), not to the whole frame.
 

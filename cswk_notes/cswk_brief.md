@@ -135,10 +135,6 @@ The coursework aims to evaluate knowledge and understanding of both the fundamen
 
 You are free to re-use any pre-trained model, pre-written library/implementation or extra datasets as you see fit, **as long as attribution is clearly given in both the code and the report**. However, simply lifting existing codebases without adapting them to the problem at hand, or otherwise demonstrating an understanding of how they work, will not result in high marks.
 
-### Compute Resources
-
-You can complete this assignment on Google Colab and on the NCC. For NCC usage, please follow the instructions at: https://nccadmin.webspace.durham.ac.uk
-
 ## Word Limit Policy
 
 The word count for each question will:
@@ -165,7 +161,7 @@ Examiners will stop reading once the word limit has been reached, and work beyon
 
 Your assignment will be put through the plagiarism detection service.
 
-Students suspected of plagiarism, either of published work or work from unpublished sources, including the work of other students, or of collusion will be dealt with according to Computer Science Department and University guidelines.
+Students suspected of plagiarism, either of published work or work from unpublished sources, will be dealt with according to Computer Science Department and University guidelines.
 
 ## Frequently Asked Questions (FAQ)
 
