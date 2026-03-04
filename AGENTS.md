@@ -3,18 +3,7 @@
 ## Project Goal
 Apply **movie visual style to game human footage** via unpaired image-to-image translation (e.g. CycleGAN). Humans are extracted and classified first so style transfer is applied locally (human patches only), not to the whole frame.
 
-## Assignment Structure & Marks
-| Q | Task | Mark | Status |
-|---|------|------|--------|
-| 1.1 | Human patch extraction from Train videos → 1,000+ patches | 10% | In progress |
-| 1.2 | Classify patches into 5 pose classes | 15% | In progress |
-| 1.3 | Select best patches for style transfer training | 15% | 🔲 TODO |
-| 2.1 | Train/deploy unpaired image-to-image model (CycleGAN etc.) | 20% | 🔲 TODO |
-| 2.2 | Apply model to Test video with temporal enhancement | 30% | 🔲 TODO |
-
-All written up in final report (see `paper/` folder).
-
-(Full cswk brief at cswk_notes/cswk_brief.txt)
+See [cswk_notes/cswk_brief.txt](cswk_notes/cswk_brief.txt) for assignment structure, mark breakdown, and detailed requirements.
 
 ## Pipeline Architecture
 

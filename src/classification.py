@@ -25,10 +25,23 @@ import glob
 import shutil
 from pathlib import Path
 
+import urllib.request
+
 import cv2
 import mediapipe as mp
 import numpy as np
 from tqdm import tqdm
+
+_FACE_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "face_detector/blaze_face_short_range/float16/1/"
+    "blaze_face_short_range.tflite"
+)
+_FACE_MODEL_DEFAULT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "models",
+    "blaze_face_short_range.tflite",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -68,21 +81,59 @@ def adaptive_conf_high(keypoints):
 # MediaPipe face detection helper
 # ---------------------------------------------------------------------------
 
-def build_face_detector(min_confidence=0.5):
+def build_face_detector(min_confidence=0.5, model_path=None):
     """
-    Return a MediaPipe FaceDetection instance (model_selection=0 for
-    close-range / cropped patches).  Call this once and reuse across
-    all classify_patch / classify_directory calls.
+    Return a MediaPipe FaceDetector (Tasks API, mediapipe >= 0.10).
+
+    The blaze_face_short_range.tflite model is auto-downloaded to models/
+    if not already present.  Returns None on any failure so the pipeline
+    degrades gracefully.
+
+    Args:
+        min_confidence: minimum detection confidence threshold.
+        model_path:     explicit path to the .tflite model; defaults to
+                        models/blaze_face_short_range.tflite.
     """
-    return mp.solutions.face_detection.FaceDetection(
-        model_selection=0,
-        min_detection_confidence=min_confidence,
-    )
+    model_path = model_path or _FACE_MODEL_DEFAULT
+
+    if not os.path.exists(model_path):
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        print(f"[classification] Downloading face detector model -> {model_path}")
+        try:
+            urllib.request.urlretrieve(_FACE_MODEL_URL, model_path)
+        except Exception as e:
+            print(f"[classification] Download failed: {e}. Face detection disabled.")
+            return None
+
+    try:
+        BaseOptions         = mp.tasks.BaseOptions
+        FaceDetector        = mp.tasks.vision.FaceDetector
+        FaceDetectorOptions = mp.tasks.vision.FaceDetectorOptions
+        VisionRunningMode   = mp.tasks.vision.RunningMode
+
+        options = FaceDetectorOptions(
+            base_options=BaseOptions(model_asset_path=model_path),
+            running_mode=VisionRunningMode.IMAGE,
+            min_detection_confidence=min_confidence,
+        )
+        return FaceDetector.create_from_options(options)
+    except Exception as e:
+        print(f"[classification] Could not build face detector: {e}")
+        return None
 
 
-def _run_face_detection(face_detector, image_path):
+def _run_face_detection(face_detector, image_path, bbox=None):
     """
     Return True if the MediaPipe face detector fires on the given image.
+
+    Args:
+        face_detector: MediaPipe FaceDetector (Tasks API) instance, or None.
+        image_path:    Path to the patch image.
+        bbox:          Optional (x1, y1, x2, y2) in pixel coords of the primary
+                       YOLO detection.  When provided, MediaPipe only sees that
+                       crop — background figures outside the bbox are ignored,
+                       preventing their faces from biasing the front/back decision.
+
     Silently returns False if image loading fails or face_detector is None.
     """
     if face_detector is None:
@@ -90,9 +141,23 @@ def _run_face_detection(face_detector, image_path):
     img_bgr = cv2.imread(str(image_path))
     if img_bgr is None:
         return False
+
+    if bbox is not None:
+        h, w = img_bgr.shape[:2]
+        x1 = max(0, int(bbox[0]))
+        y1 = max(0, int(bbox[1]))
+        x2 = min(w, int(bbox[2]))
+        y2 = min(h, int(bbox[3]))
+        if x2 > x1 and y2 > y1:
+            img_bgr = img_bgr[y1:y2, x1:x2]
+
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    result  = face_detector.process(img_rgb)
-    return bool(result.detections)
+    try:
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        result   = face_detector.detect(mp_image)
+        return bool(result.detections)
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +274,13 @@ def classify_orientation(keypoints, conf_high=None, face_detected=False):
         front_score += 3.0
 
     # --- Secondary evidence: YOLO face keypoints ---
-    face_indices = [0, 1, 2, 3, 4]  # nose, eyes, ears
-    n_face     = count_visible(keypoints, face_indices, ch)
-    n_face_low = count_visible(keypoints, face_indices, CONF_LOW)
+    # Only nose and eyes are reliable front-only indicators.
+    # Ears are visible from both front and back, so excluded here.
+    face_indices    = [0, 1, 2]  # nose, l_eye, r_eye only
+    ear_indices     = [3, 4]     # treated separately below
+    n_face          = count_visible(keypoints, face_indices, ch)
+    n_face_low      = count_visible(keypoints, face_indices, CONF_LOW)
+    n_ears          = count_visible(keypoints, ear_indices, ch)
 
     # Total keypoints detected at any confidence — used to gate back evidence.
     n_kp_any = count_visible(keypoints, list(range(17)), CONF_LOW)
@@ -247,17 +316,19 @@ def classify_orientation(keypoints, conf_high=None, face_detected=False):
             # Nose outside shoulder width — unusual for front view
             back_score += 0.5
 
-    # --- Quaternary evidence: ear visibility vs shoulder alignment ---
+    # --- Quaternary evidence: ear visibility ---
+    # Ears visible without any nose/eyes: back-of-head presentation.
+    # Ears visible alongside nose/eyes: corroborates front view.
     l_ear = kp(keypoints, 3, ch)
     r_ear = kp(keypoints, 4, ch)
     ears_visible = (l_ear[2] > 0) + (r_ear[2] > 0)
 
-    if ears_visible == 2 and l_shoulder[2] > 0 and r_shoulder[2] > 0:
-        # Both ears + both shoulders visible: consistent with front
-        front_score += 0.5
-    elif ears_visible == 0 and l_shoulder[2] > 0 and r_shoulder[2] > 0:
-        # Neither ear visible with both shoulders: back evidence
-        back_score += 1.0
+    if ears_visible >= 1 and n_face == 0:
+        # Ears with no frontal face features → back
+        back_score += 1.2 * ears_visible
+    elif ears_visible >= 1 and n_face >= 1:
+        # Ears alongside nose/eyes → corroborates front
+        front_score += 0.3 * ears_visible
 
     # --- Quinary: shoulder/hip width ratio ---
     l_hip = kp(keypoints, 11, ch)
@@ -288,6 +359,139 @@ def classify_orientation(keypoints, conf_high=None, face_detected=False):
         return None
 
     return 'front' if front_score > back_score else 'back'
+
+
+def classify_orientation_debug(keypoints, conf_high=None, face_detected=False):
+    """
+    Identical logic to classify_orientation but returns a full score trace dict
+    alongside the decision.  Use for pipeline diagnostics only.
+
+    Returns
+    -------
+    orientation : str | None
+    trace : dict with keys: conf_high, face_detected, n_face, n_face_low,
+            n_kp_any, front_score, back_score, margin, override_fired,
+            decision, and a list of per-step dicts under 'steps'.
+    """
+    ch = conf_high if conf_high is not None else CONF_HIGH
+    trace = {"conf_high": ch, "face_detected": face_detected, "steps": []}
+
+    front_score = 0.0
+    back_score  = 0.0
+
+    def record(label, delta_front=0.0, delta_back=0.0, note=""):
+        nonlocal front_score, back_score
+        front_score += delta_front
+        back_score  += delta_back
+        trace["steps"].append({
+            "label": label,
+            "delta_front": delta_front,
+            "delta_back": delta_back,
+            "front_score": round(front_score, 3),
+            "back_score": round(back_score, 3),
+            "note": note,
+        })
+
+    if face_detected:
+        record("face_detector", delta_front=3.0, note="MediaPipe fired")
+    else:
+        record("face_detector", note="MediaPipe not used / no face")
+
+    # --- Secondary evidence: YOLO face keypoints ---
+    # Only nose and eyes are reliable front-only indicators.
+    # Ears are visible from both front and back, so excluded here.
+    face_indices = [0, 1, 2]  # nose, l_eye, r_eye only
+    ear_indices  = [3, 4]
+    n_face     = count_visible(keypoints, face_indices, ch)
+    n_face_low = count_visible(keypoints, face_indices, CONF_LOW)
+    n_ears     = count_visible(keypoints, ear_indices, ch)
+    n_kp_any   = count_visible(keypoints, list(range(17)), CONF_LOW)
+    trace.update({"n_face": n_face, "n_face_low": n_face_low, "n_kp_any": n_kp_any, "n_ears": n_ears})
+
+    if n_face >= 2:
+        record("yolo_face_kps", delta_front=3.0, note=f"n_face={n_face} >= 2")
+    elif n_face == 1:
+        record("yolo_face_kps", delta_front=1.2, note="n_face=1 (unreliable)")
+    elif n_face_low >= 1:
+        record("yolo_face_kps", delta_front=0.5, note=f"n_face_low={n_face_low} (low conf)")
+    else:
+        record("yolo_face_kps", note="no face kps")
+
+    if n_face_low == 0 and n_kp_any >= 6:
+        record("back_no_face", delta_back=1.0, note=f"no face at any conf, n_kp_any={n_kp_any}")
+    elif n_face == 0 and n_face_low >= 1:
+        record("back_ghost_face", delta_back=1.5, note="ghost low-conf face kps")
+    elif n_face == 1:
+        record("back_stray_kp", delta_back=0.8, note="single stray face kp")
+    else:
+        record("back_face", note="no back evidence from face kps")
+
+    nose       = kp(keypoints, 0, ch)
+    l_shoulder = kp(keypoints, 5, ch)
+    r_shoulder = kp(keypoints, 6, ch)
+
+    if all(p[2] > 0 for p in [nose, l_shoulder, r_shoulder]):
+        s_min = min(l_shoulder[0], r_shoulder[0])
+        s_max = max(l_shoulder[0], r_shoulder[0])
+        if s_min < nose[0] < s_max:
+            record("nose_in_shoulders", delta_front=1.0, note="nose between shoulders")
+        else:
+            record("nose_outside_shoulders", delta_back=0.5, note="nose outside shoulder width")
+    else:
+        record("nose_shoulders", note="nose or shoulders not visible")
+
+    l_ear = kp(keypoints, 3, ch)
+    r_ear = kp(keypoints, 4, ch)
+    ears_visible = (l_ear[2] > 0) + (r_ear[2] > 0)
+
+    if ears_visible >= 1 and n_face == 0:
+        record("ears", delta_back=1.2 * ears_visible,
+               note=f"ears={ears_visible} without nose/eyes -> back")
+    elif ears_visible >= 1 and n_face >= 1:
+        record("ears", delta_front=0.3 * ears_visible,
+               note=f"ears={ears_visible} with nose/eyes -> front")
+    else:
+        record("ears", note=f"ears_visible={ears_visible}, no strong signal")
+
+    l_hip = kp(keypoints, 11, ch)
+    r_hip = kp(keypoints, 12, ch)
+
+    if all(p[2] > 0 for p in [l_shoulder, r_shoulder, l_hip, r_hip]):
+        sh_w  = abs(l_shoulder[0] - r_shoulder[0])
+        hip_w = abs(l_hip[0]      - r_hip[0])
+        ratio = sh_w / (hip_w + 1e-6)
+        if ratio > 1.15:
+            record("sh_hip_ratio", delta_front=0.3, note=f"ratio={ratio:.2f} > 1.15")
+        elif 0.85 < ratio < 1.15:
+            record("sh_hip_ratio", delta_back=0.2, note=f"ratio={ratio:.2f} near 1.0")
+        else:
+            record("sh_hip_ratio", note=f"ratio={ratio:.2f}")
+    else:
+        record("sh_hip_ratio", note="hips/shoulders not both visible")
+
+    total    = front_score + back_score
+    margin   = abs(front_score - back_score) / total if total > 0.5 else 0.0
+    override = front_score > 2.5 and front_score > back_score
+
+    trace.update({
+        "front_score": round(front_score, 3),
+        "back_score":  round(back_score, 3),
+        "total":       round(total, 3),
+        "margin":      round(margin, 3),
+        "override_fired": override,
+    })
+
+    if total < 0.5:
+        orientation = None
+    elif override:
+        orientation = 'front'
+    elif margin < 0.12:
+        orientation = None
+    else:
+        orientation = 'front' if front_score > back_score else 'back'
+
+    trace["decision"] = orientation
+    return orientation, trace
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +551,7 @@ def classify_patch(pose_model, image_path, face_detector=None):
 
     keypoints     = kp_data[best_idx].cpu().numpy()  # [17, 3]
     bbox          = boxes[best_idx]                   # (x1, y1, x2, y2)
-    face_detected = _run_face_detection(face_detector, image_path)
+    face_detected = _run_face_detection(face_detector, image_path, bbox=bbox)
 
     return classify_keypoints(keypoints, face_detected=face_detected, bbox=bbox)
 
@@ -431,7 +635,7 @@ def classify_directory(
                 best_idx = int(np.argmax(areas))
                 keypoints         = result.keypoints.data[best_idx].cpu().numpy()
                 bbox              = boxes[best_idx]
-                face_det_result   = _run_face_detection(face_detector, img_path)
+                face_det_result   = _run_face_detection(face_detector, img_path, bbox=bbox)
                 cls               = classify_keypoints(
                     keypoints,
                     face_detected=face_det_result,

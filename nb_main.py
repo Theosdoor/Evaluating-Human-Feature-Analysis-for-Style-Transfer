@@ -2,6 +2,7 @@
 # ACV CSWK 2026 - Main Notebook
 # Must be in root directory, and submitted as .ipynb file.
 # Must replicate (within reason), the multimedia files as requested in `cswk_notes/cswk_brief.txt`.
+# AGENTS: keep this script clean as much as possible. Add to src or create a new script in scripts/ if necessary.
 
 # %%
 import os
@@ -33,7 +34,7 @@ from src.classification import *
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
 TRAIN_PATHS = [
-    os.path.join(DATA_DIR, "Train/game/MafiaVideogame.mp4"), # TODO v large, so temporarily ignore
+    # os.path.join(DATA_DIR,"Train/game/MafiaVideogame.mp4"), # TODO v large, so temporarily ignore
     os.path.join(DATA_DIR,"Train/movie/TheGodfather.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheIrishman.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheSopranos.mp4"),
@@ -47,10 +48,10 @@ SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
 # Leave as None to run the full pipeline from scratch.
 # e.g. RELOAD_RUN = "20260224-224712"
 RELOAD_RUN = None
-# RELOAD_RUN = "20260224-224712"
+RELOAD_RUN = "20260225-104100"
 
 # Set True to re-run classification even when RELOAD_RUN is set.
-RECLASSIFY = False # need RELOAD_RUN != None to use this
+RECLASSIFY = True # need RELOAD_RUN != None to use this
 
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
@@ -92,6 +93,7 @@ else:
         selected_detections += selected
     # 50 to submit (do once we've got good results)
     print(f"Using freshly-extracted patches from {extract_save_path}")
+    save_extraction_summary(extract_save_path, detections, selected_detections)
 
 # %%
 # 1.2. Classification
@@ -106,6 +108,11 @@ else:
     pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
     pose_model.to(DEVICE)
 
+    face_detector = build_face_detector(
+        model_path=os.path.join(PROJECT_ROOT, 'models/blaze_face_short_range.tflite')
+    )
+    print(face_detector)
+
     results, summary = classify_directory(
         pose_model,
         input_dir=cls_input_path,
@@ -113,7 +120,9 @@ else:
         batch_size=classify_b_size,
         copy_files=True,       # copy files to classifications dir for easy reference
         save_debug_viz=True,   # set True to save YOLO-annotated images to debug_viz/
+        face_detector=face_detector,
     )
+    face_detector.close()  # release MediaPipe resources before GC to avoid __del__ crash
 
     print(summary)
 
@@ -134,18 +143,5 @@ else:
     print(f"Summary saved to {summary_path}")
 
 total_classified = sum(summary.values())
-
-# %%
-# Diagnostics
-save_extraction_summary(extract_save_path, detections, selected_detections)
-
-print("\n=== Classification Diagnostics ===")
-print(f"Total classified: {total_classified}")
-print(f"\n{'Class':<25} {'Count':>6}  {'%':>6}")
-print("-" * 42)
-for cls, count in sorted(summary.items(), key=lambda x: -x[1]):
-    pct = 100 * count / total_classified if total_classified else 0
-    print(f"{cls:<25} {count:>6}  {pct:>5.1f}%")
-
 
 # %%
