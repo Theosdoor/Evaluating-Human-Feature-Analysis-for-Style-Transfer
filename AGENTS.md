@@ -5,7 +5,7 @@ Use the python skill when writing / planning code in this repo!
 ## Project Goal
 Apply **movie visual style to game human footage** via unpaired image-to-image translation (e.g. CycleGAN). Humans are extracted and classified first so style transfer is applied locally (human patches only), not to the whole frame.
 
-See [cswk_notes/cswk_brief.txt](cswk_notes/cswk_brief.txt) for assignment structure, mark breakdown, and detailed requirements.
+See [cswk_notes/cswk_brief.md](cswk_notes/cswk_brief.md) for assignment structure, mark breakdown, and detailed requirements.
 
 ## Pipeline Architecture
 
@@ -53,7 +53,8 @@ output/
 
 ## Submission Requirements
 - **Jupyter notebook** must stay in root dir and `import` from `src/` (`nb_main.py` will be the submission notebook).
-- PDF report + ZIP (notebook + multimedia + optional `.py`/`.sh`)
-- Do **not** include original `.mp4` data files; compress all media
-- Include auto-download lines for any external models/datasets (`wget`, `git clone`)
+- Do **not** include original `.mp4` data files; compress all media.
+- Include auto-download lines for any external models/datasets (`wget`, `git clone`).
 - Other scripts besides `nb_main.py` can go into `scripts/`.
+
+See [paper/AGENTS.md](paper/AGENTS.md) for paper build instructions and PDF submission notes.
