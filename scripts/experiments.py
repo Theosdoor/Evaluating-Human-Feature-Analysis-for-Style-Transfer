@@ -45,6 +45,12 @@ DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 print(f"Using device: {DEVICE}")
 
 # %%
+# ── Change these three variables to inspect a different patch ───────────────
+DIAG_RUN   = "20260225-104100"
+DIAG_CLASS = "full_body_front"
+DIAG_IMAGE = "human_0000_TheIrishman_f009288_conf0.92_score0.92"
+
+# %%
 # Classification viewer — paste a relative path to a classified patch and see
 # the original crop alongside its debug_viz annotation.
 #
@@ -94,9 +100,12 @@ def show_patch_debug(rel_path: str, root: str = PROJECT_ROOT) -> None:
     plt.show()
 
 
-# ── Set this to any classified-patch relative path and re-run the cell ──────
-view_path = "output/classifications/20260225-104100/full_body_front/human_0001_TheGodfather_f001959_conf0.91_score0.87.jpg"
+
+
+view_path = os.path.join("output", "classifications", DIAG_RUN, DIAG_CLASS, DIAG_IMAGE + ".jpg")
 show_patch_debug(view_path)
+
+# %%
 
 # %%
 # ── Deep classification diagnostic ──────────────────────────────────────────
@@ -116,11 +125,8 @@ COCO_KP_NAMES = [
     "l_knee", "r_knee", "l_ankle", "r_ankle",
 ]
 
-DIAG_PATH = os.path.join(
-    PROJECT_ROOT,
-    "output/classifications/20260225-104100/full_body_front/"
-    "human_0001_TheGodfather_f001959_conf0.91_score0.87.jpg"
-)
+# Uses DIAG_RUN / DIAG_CLASS / DIAG_IMAGE defined in the viewer cell above
+DIAG_PATH = os.path.join(PROJECT_ROOT, "output", "classifications", DIAG_RUN, DIAG_CLASS, DIAG_IMAGE + ".jpg")
 
 # --- load models if not in scope ---
 if "pose_model" not in dir():
@@ -246,5 +252,7 @@ plt.savefig(os.path.join(PROJECT_ROOT, "output", "diag_classification.png"),
             dpi=150, bbox_inches="tight")
 plt.show()
 print(f"Saved to output/diag_classification.png")
+
+# %%
 
 # %%

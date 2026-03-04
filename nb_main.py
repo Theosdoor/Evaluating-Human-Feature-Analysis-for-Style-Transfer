@@ -105,6 +105,14 @@ if RELOAD_RUN and not RECLASSIFY:
     # Reload existing classification results
     results, summary = reload_classification_results(cls_save_path)
 else:
+    # Clean up stale files from previous classification runs if reclassifying
+    if RELOAD_RUN and RECLASSIFY:
+        import shutil
+        for cls in CLASSES:
+            cls_dir = os.path.join(cls_save_path, cls)
+            if os.path.isdir(cls_dir):
+                shutil.rmtree(cls_dir)
+
     pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
     pose_model.to(DEVICE)
 

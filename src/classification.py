@@ -269,13 +269,7 @@ def classify_orientation(keypoints, conf_high=None, face_detected=False):
     front_score = 0.0
     back_score  = 0.0
 
-    # --- Primary evidence: dedicated face detector ---
-    if face_detected:
-        front_score += 3.0
-
-    # --- Secondary evidence: YOLO face keypoints ---
-    # Only nose and eyes are reliable front-only indicators.
-    # Ears are visible from both front and back, so excluded here.
+    # --- Compute face keypoint visibility upfront (needed for both primary and secondary evidence) ---
     face_indices    = [0, 1, 2]  # nose, l_eye, r_eye only
     ear_indices     = [3, 4]     # treated separately below
     n_face          = count_visible(keypoints, face_indices, ch)
@@ -284,6 +278,19 @@ def classify_orientation(keypoints, conf_high=None, face_detected=False):
 
     # Total keypoints detected at any confidence — used to gate back evidence.
     n_kp_any = count_visible(keypoints, list(range(17)), CONF_LOW)
+
+    # --- Primary evidence: dedicated face detector ---
+    # Full bonus only when YOLO also sees face keypoints on the primary subject.
+    # If the detector fired but YOLO sees nothing, a background face within the
+    # bbox is the likely cause.
+    if face_detected and n_face >= 1:
+        front_score += 3.0
+    elif face_detected:
+        front_score += 1.0
+
+    # --- Secondary evidence: YOLO face keypoints ---
+    # Only nose and eyes are reliable front-only indicators.
+    # Ears are visible from both front and back, so excluded here.
 
     if n_face >= 2:
         front_score += 3.0
@@ -296,7 +303,7 @@ def classify_orientation(keypoints, conf_high=None, face_detected=False):
     # overall — if the model barely detected anyone, missing face KPs say
     # nothing about orientation.
     if n_face_low == 0 and n_kp_any >= 6:
-        back_score += 1.0   # was 2.5 — reduced and gated
+        back_score += 2.5
     elif n_face == 0 and n_face_low >= 1:
         back_score += 1.5   # ghost low-confidence keypoints only
     elif n_face == 1:
@@ -326,9 +333,10 @@ def classify_orientation(keypoints, conf_high=None, face_detected=False):
     if ears_visible >= 1 and n_face == 0:
         # Ears with no frontal face features → back
         back_score += 1.2 * ears_visible
-    elif ears_visible >= 1 and n_face >= 1:
+    elif ears_visible >= 1 and n_face >= 2:
         # Ears alongside nose/eyes → corroborates front
         front_score += 0.3 * ears_visible
+    # ears_visible >= 1 and n_face == 1: no score either way — ambiguous
 
     # --- Quinary: shoulder/hip width ratio ---
     l_hip = kp(keypoints, 11, ch)
@@ -411,7 +419,7 @@ def classify_orientation_debug(keypoints, conf_high=None, face_detected=False):
     if n_face >= 2:
         record("yolo_face_kps", delta_front=3.0, note=f"n_face={n_face} >= 2")
     elif n_face == 1:
-        record("yolo_face_kps", delta_front=1.2, note="n_face=1 (unreliable)")
+        record("yolo_face_kps", delta_front=0.5, note="n_face=1 (unreliable)")
     elif n_face_low >= 1:
         record("yolo_face_kps", delta_front=0.5, note=f"n_face_low={n_face_low} (low conf)")
     else:
