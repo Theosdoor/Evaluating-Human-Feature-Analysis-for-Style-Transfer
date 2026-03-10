@@ -1,13 +1,30 @@
 # Implementation Plan — Stages 1.3, 2.1, 2.2
 
+## Dataset Details
+
+| File | Duration | Size | Resolution | FPS | Frames | Bitrate | Domain |
+|------|----------|------|------------|-----|--------|---------|--------|
+| `downloaded_data/Train/game/MafiaVideogame.mp4` | 2:21:04 | 484 MB | 1280×720 | 30.00 | 253,944 | ~0.5 Mbps | game |
+| `downloaded_data/Train/movie/TheGodfather.mp4` | 0:08:59 | 70 MB | 1280×720 | 23.98 | 12,945 | ~1.1 Mbps | movie |
+| `downloaded_data/Train/movie/TheIrishman.mp4` | 0:15:27 | 114 MB | 1280×720 | 25.06 | 23,236 | ~1.0 Mbps | movie |
+| `downloaded_data/Train/movie/TheSopranos.mp4` | 0:28:43 | 121 MB | 1280×720 | 30.00 | 51,714 | ~0.6 Mbps | movie |
+| `downloaded_data/Test/Test.mp4` | 0:01:10 | 17 MB | 1280×720 | 30.00 | 2,114 | ~2.0 Mbps | game |
+
+**Total training:** ~53 min movie + ~141 min game. **Test:** 70 seconds, 2,114 frames @ 30 fps.
+
+All sources are 720p. MafiaVideogame is heavily compressed (~0.5 Mbps) but resolution is adequate for 256×256 CycleGAN patches — `--crop_size 256` is fine.
+
+---
+
 ## Current State
 
 Stages 1.1 and 1.2 are complete. The `20260225-104100` run produced:
 
-- **1,000 patches** (250 per source: MafiaVideogame, TheGodfather, TheIrishman, TheSopranos)
+- **1,000 patches** (250 per source: MafiaVideogame, TheGodfather, TheIrishman, TheSopranos). Can run nb_main.py again for more patches if appropriate.
 - **Score range**: 0.57–0.94 (mean 0.72)
 - **Classification distribution**: 632 full\_body\_front (63.2%), 228 head\_shoulder\_front (22.8%), 65 full\_body\_back (6.5%), 38 head\_shoulder\_back (3.8%), 37 others (3.7%)
 - Game patches come solely from MafiaVideogame; movie patches from the other three sources.
+- **MafiaVideogame is massively undersampled**: 250 patches from a 2h21m video = ~1.8 patches/min vs ~14 patches/min for movie sources. This is a sampling config issue, not a data scarcity problem — there is ample game footage.
 
 Dependencies already in `pyproject.toml`: torch, torchvision, ultralytics, opencv-python, scikit-learn, numpy, tqdm, **timm**, **umap-learn**, **clean-fid**. All managed via `uv`; to add further deps use `uv add <package>`, never edit `pyproject.toml` directly.
 
@@ -30,22 +47,17 @@ The plan is sound overall. Specific notes and adjustments:
 - Sample up to N/k patches per cluster, prioritising by extraction score within each cluster. This retains the quality signal while enforcing diversity.
 - **Be careful with the game/movie split**: run k-means on each domain separately to ensure diversity within each domain. If you cluster the combined pool, game and movie patches may land in the same clusters and the per-cluster sampling won't preserve domain balance.
 
-**Game/movie balance** — Currently you have 250 game + 750 movie patches. After class filtering 925 remain, roughly 240 game / 685 movie. A 50/50 split means ~240 per domain (≈480 total), which is at the low end of your 300–500 target. Two options:
+**Game/movie balance** — Currently you have 250 game + 750 movie patches. After class filtering 925 remain, roughly 240 game / 685 movie. This is not a data scarcity problem: MafiaVideogame has 2h21m of footage and should yield 1000–1500 raw patches easily. The fix is simply raising the extraction target, not augmentation or accepting imbalance.
 
-1. **Re-extract with MafiaVideogame included in nb_main.py** (it's currently commented out with a TODO). This is the cleanest fix — run extraction on MafiaVideogame with a higher per-video target (e.g. 500) to get more game material. The pipeline already supports it; you just uncomment the path.
-2. **Augment the game domain** with horizontal flips at training time (CycleGAN augmentation handles this anyway) and accept a slight imbalance (240 vs 350 movie). This is acceptable — CycleGAN papers note that moderate imbalance (up to 2:1) has minimal impact.
-
-**Recommendation**: go with option 1 — re-extract game patches from MafiaVideogame with a target of 500, then balance both domains to ~300–400. This gives the best training signal.
+**Action**: re-extract MafiaVideogame targeting **1000–1500 raw patches** (see "Fixing class imbalance at extraction" below). After DINO diversity selection, target **450 patches per domain** — this brings the training set much closer to the ~1000 images/domain used in the original CycleGAN horse2zebra experiments. 300/domain is unnecessarily conservative given the available source material.
 
 ### Fixing class imbalance at extraction
 
-The current 63% full\_body\_front dominance is a sampling artefact, not a property of the data. Two changes fix it:
+The current 63% full\_body\_front dominance is a sampling artefact compounded by undersampling MafiaVideogame. A 2h21m game video naturally contains abundant back-views, head-shoulder shots, and crowd scenes — they are simply being discarded by aggressive deduplication and a low `n2save` cap. Two changes fix it:
 
 1. **Lower the `temporal_gap` in `diverse_sampling`** — the current gap of 30 frames aggressively deduplicates, which discards back-view and head-shoulder crops that appear briefly. Reduce to `temporal_gap=15` or even `10` to retain more short-lived poses. The DINO diversity step downstream will handle the actual deduplication more intelligently.
 
-2. **Class-aware budgeting in `diverse_sampling`** — after the initial greedy pass, check per-class counts (requires a fast classification pass or heuristic, e.g. aspect-ratio < 1.5 → head\_shoulder). If a class is underrepresented, do a second pass over rejected detections relaxing temporal\_gap for that class only. Alternatively, run extraction with a higher `n2save` (e.g. 2000) and let the 1.3 data selection step balance classes via stratified sampling from DINO clusters.
-
-3. **Increase extraction volume** — set `n2save=2000` and extract more broadly, then let the DINO diversity selection in 1.3 trim down to 300–500 per domain. More raw material means the rare classes (back views, head\_shoulder\_back) have a better chance of surviving quality filtering.
+2. **Increase extraction volume** — set `n2save=1500` for MafiaVideogame (and raise movie sources to `n2save=600` each), then let the DINO diversity selection in 1.3 trim down to 450 per domain. More raw material means the rare classes (back views, head\_shoulder\_back) have a better chance of surviving quality filtering. Class-aware budgeting in `diverse_sampling` is a secondary fix — unnecessary if extraction volume is high enough.
 
 The simplest approach: extract 2000 patches (option 3), then in `select_training_data` do stratified sampling — allocate a minimum quota per class (e.g. 15% of target) and fill the rest proportionally. This keeps the extraction code simple and handles balancing in one place.
 
@@ -62,7 +74,7 @@ select_training_data(
     keep_classes,              # ['full_body_front', 'full_body_back', 'head_shoulder_front']
     min_score,                 # 0.6
     n_clusters,                # 50 (per domain)
-    target_per_domain,         # 300
+    target_per_domain,         # 450
     device,                    # 'cuda'
 ) -> dict                     # stats: per-domain counts, cluster info
 ```
@@ -101,7 +113,7 @@ selection_stats = select_training_data(
     keep_classes=CLASSES,  # all five classes
     min_score=0.6,
     n_clusters=50,
-    target_per_domain=300,
+    target_per_domain=450,
     device=DEVICE,
 )
 ```
@@ -110,8 +122,8 @@ selection_stats = select_training_data(
 
 ```
 output/selected_for_training/
-    game/       # ~300 patches
-    movie/      # ~300 patches
+    game/       # ~450 patches
+    movie/      # ~450 patches
     _selection_summary.txt
     umap_plot.png
 ```
@@ -134,7 +146,7 @@ output/selected_for_training/
 
 - `--dataroot output/selected_for_training --name game2movie`
 - `--model cycle_gan --pool_size 50 --no_dropout`
-- `--load_size 286 --crop_size 256` (standard CycleGAN random-crop augmentation)
+- `--load_size 286 --crop_size 256` (standard CycleGAN random-crop augmentation) — all sources confirmed 1280×720, so 256×256 patches are safe.
 - `--batch_size 1` (default for CycleGAN; batch_size > 1 is possible but changes BatchNorm statistics)
 - `--n_epochs 50 --n_epochs_decay 50` (linear LR decay in second half)
 - `--gpu_ids 0`
@@ -142,7 +154,7 @@ output/selected_for_training/
 
 **Evaluation metrics**:
 
-- **FID**: use `pytorch-fid` (or `clean-fid`). Compute FID(generated\_game→movie, real\_movie) and FID(generated\_movie→game, real\_game). Lower is better. With ~300 images, FID will have high variance — note this in the report.
+- **FID**: use `clean-fid`. Compute FID(generated\_game→movie, real\_movie) and FID(generated\_movie→game, real\_game). Lower is better. With ~300 images, FID will have high variance — note this in the report.
 - **SSIM**: `skimage.metrics.structural_similarity` between each input and its translated output. This measures structure preservation, not style transfer quality. Report per-image SSIM with mean/std.
 - **Show 10 success + 10 failure pairs per direction** as the brief requires. Select failures by lowest SSIM or visual inspection (faces with artifacts, mode collapse, background bleed).
 
@@ -511,17 +523,17 @@ Always use `uv add <package>` to add new dependencies. Never `pip install` ad-ho
 ## Execution Order
 
 ```
-1. [Optional] Re-extract with MafiaVideogame at higher target count
-2. Run 1.3 data selection → output/selected_for_training/{game,movie}/
-3. Clone junyanz/pytorch-CycleGAN-and-pix2pix → external/cyclegan/
-4. Prepare CycleGAN data (symlinks trainA/trainB)
-5. Train CycleGAN (Slurm, ~3-6 hours)
-6. Evaluate CycleGAN: FID + SSIM + success/failure pairs
-7. Build local style transfer pipeline (Stage 1)
-8. Generate test_local.mp4
-9. Add RAFT temporal blending (Stage 2)
-10. Generate test_temporal.mp4
-11. Extract keyframes for report comparison
+1. Re-extract MafiaVideogame with n2save=1500; raise movie sources to n2save=600 each
+2. Run 1.3 data selection → output/selected_for_training/{game,movie}/  # target 450 per domain
+4. Clone junyanz/pytorch-CycleGAN-and-pix2pix → external/cyclegan/
+5. Prepare CycleGAN data (symlinks trainA/trainB)
+6. Train CycleGAN (Slurm, ~3-6 hours)
+7. Evaluate CycleGAN: FID + SSIM + success/failure pairs
+8. Build local style transfer pipeline (Stage 1)
+9. Generate test_local.mp4 (~70s, ~1700–2100 frames, budget 30–70 min on 2080 Ti)
+10. Add RAFT temporal blending (Stage 2)
+11. Generate test_temporal.mp4
+12. Extract keyframes for report comparison
 ```
 
 ---
@@ -531,7 +543,7 @@ Always use `uv add <package>` to add new dependencies. Never `pip install` ad-ho
 | Risk | Impact | Mitigation |
 |---|---|---|
 | CycleGAN doesn't converge in 100 epochs | No style transfer at all | Monitor training loss; fall back to 200 epochs or reduce image pool size |
-| Too few game patches (~240) | Imbalanced training | Re-extract MafiaVideogame with higher target; augment with flips |
+| Too few game patches (~240) | Imbalanced training | Re-extract MafiaVideogame with n2save=1500 — 2h21m of footage makes this trivial |
 | RAFT + CycleGAN exceeds 11 GB VRAM | OOM on 2080 Ti | Use `raft_small`; keep all models loaded once (see VRAM budget table — ~5–7 GB working total); if OOM, run RAFT and CycleGAN sequentially with `torch.cuda.empty_cache()` between them |
 | Poisson blending artifacts at bbox edges | Visible seams in output video | Fall back to Gaussian feathering; expand bbox by 10% to include context |
 | Temporal blending causes ghosting on fast motion | Visual quality degradation | Increase α or disable blending when flow magnitude exceeds threshold |

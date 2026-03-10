@@ -1,4 +1,5 @@
 """
+1.2
 classification.py
 
 Pose-based human patch classification into five categories:

@@ -9,10 +9,6 @@
 - Planning, organising and time management
 - Problem solving and analysis
 
-## General Requirements
-
-Students are expected to work on the coursework individually.
-
 ### Expected Deliverables
 
 Students are expected to:

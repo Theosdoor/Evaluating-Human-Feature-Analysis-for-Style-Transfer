@@ -1,3 +1,5 @@
+# Log
+<!-- NOT FOR COPILOT -->
 
 ## 4 March
 
