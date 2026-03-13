@@ -1,60 +1,44 @@
 # ACV Coursework — Copilot Instructions
 
-Use the python skill when writing / planning code in this repo!
+**Always load the `python` skill before writing or planning Python code in this repo.**
 
 ## Project Goal
-Apply **movie visual style to game human footage** via unpaired image-to-image translation (e.g. CycleGAN). Humans are extracted and classified first so style transfer is applied locally (human patches only), not to the whole frame.
+Deep learning solution to enhance visual quality of humans in game videos using movie footage as reference. Unpaired image-to-image translation (CycleGAN) applied locally to human patches extracted via YOLO detection + pose classification.
 
-See [cswk_notes/cswk_brief.md](cswk_notes/cswk_brief.md) for assignment structure, mark breakdown, and detailed requirements. Don't edit any of the files in here.
+See [cswk_notes/cswk_brief.md](cswk_notes/cswk_brief.md) for assignment structure and requirements. Don't edit files in `cswk_notes/`.
 
-## Pipeline Architecture
+---
 
-**Two-stage, reference-based design** — detections store `{video_path, frame_num, bbox}` not raw pixels; `save_patches` re-reads videos sequentially to avoid memory blowout.
-
-**Frame filtering before YOLO** (in `extract_humans_from_video`):
-1. Inter-frame diff < `scene_change_threshold` → skip duplicate frames  
-2. Enforce `yolo_interval` minimum gap  
-3. Buffer `yolo_batch_size=8` eligible frames → single GPU call
-
-**Film vs game blur threshold** inferred from filename keywords (`movie`, `godfather`, etc.); film gets a lower Laplacian variance threshold.
-
-**Classification is evidence-weighted** (`classify_orientation` in `src/classification.py`): accumulates `front_score`/`back_score` with weighted signals (face visibility = 3.0, geometry = 1.0, ears = 0.5, shoulder-hip ratio = 0.3); ambiguous detections → `others`.
-
-## Models
-Stored in `models/` (not committed, not downloaded automatically):
-- `models/yolov8m.pt` — person detection (class 0 only)
-- `models/yolo26m-pose.pt` — 17-keypoint COCO pose estimation
-
-COCO keypoint index reference is at the top of `src/classification.py`.
-
-## Environment & Execution
+## Environment
 
 ```bash
-cd /path/to/dir
-uv sync
-source .venv/bin/activate
-python3 main.py
+cd /home2/nchw73/Year4/ACV_cswk
+uv sync && source .venv/bin/activate
+python3 nb_main.py   # or run cells interactively
 ```
 
-**Slurm** (`submit_job.sh`): single GPU (RTX 2080ti), max. 28 GB RAM, CUDA auto-selected:
+**Slurm** (`slurm/submit_job.sh`): partition `ug-gpu-small`, `--gres=gpu:turing:1`, 5 h, 28 GB RAM. Currently runs `scripts/ablate_mediapipe.py` — edit the last block to change target.
+
 ```python
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-model.to(DEVICE)
+DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 ```
 
-## Output Layout
+## Data
+
 ```
-output/
-  extracted_humans/<timestamp>/     # 1,000+ scored patches (submit random 50)
-  classifications/<timestamp>/
-    full_body_front/ full_body_back/
-    head_shoulder_front/ head_shoulder_back/ others/  # submit random 20/class
+downloaded_data/
+  Train/game/MafiaVideogame.mp4     # 141 min
+  Train/movie/TheGodfather.mp4  TheIrishman.mp4  TheSopranos.mp4
+  Test/Test.mp4
 ```
+
+
 
 ## Submission Requirements
-- **Jupyter notebook** must stay in root dir and `import` from `src/` (`nb_main.py` will be the submission notebook).
-- Do **not** include original `.mp4` data files; compress all media.
-- Include auto-download lines for any external models/datasets (`wget`, `git clone`).
-- Other scripts besides `nb_main.py` can go into `scripts/`.
 
-See [paper/AGENTS.md](paper/AGENTS.md) for paper build instructions and PDF submission notes.
+- **Jupyter notebook** must stay in root dir; `nb_main.py` will be submitted as `.ipynb`
+- Do **not** include original `.mp4` files; compress all media
+- Include auto-download lines for external models (`wget`, `git clone`)
+- Scripts other than `nb_main.py` go in `scripts/`
+
+See [paper/AGENTS.md](paper/AGENTS.md) for paper build instructions.

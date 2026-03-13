@@ -251,6 +251,142 @@ def classify_body_extent(keypoints, conf_high=None, bbox=None):
 # Front / back classification
 # ---------------------------------------------------------------------------
 
+def _classify_orientation_impl(keypoints, ch, face_detected):
+    """
+    Core scoring engine shared by classify_orientation and classify_orientation_debug.
+
+    Always builds a steps list (used by the debug wrapper; negligible overhead
+    in the production path).
+
+    Returns
+    -------
+    orientation : 'front' | 'back' | None
+    front_score, back_score : float
+    metrics : dict with n_face, n_face_low, n_ears, n_kp_any
+    steps   : list of per-step score dicts
+    """
+    front_score = 0.0
+    back_score  = 0.0
+    steps: list = []
+
+    def score(label, df=0.0, db=0.0, note=""):
+        nonlocal front_score, back_score
+        front_score += df
+        back_score  += db
+        steps.append({
+            "label": label, "delta_front": df, "delta_back": db,
+            "front_score": round(front_score, 3), "back_score": round(back_score, 3),
+            "note": note,
+        })
+
+    n_face     = count_visible(keypoints, [0, 1, 2], ch)
+    n_face_low = count_visible(keypoints, [0, 1, 2], CONF_LOW)
+    n_ears     = count_visible(keypoints, [3, 4], ch)
+    n_kp_any   = count_visible(keypoints, list(range(17)), CONF_LOW)
+
+    # --- Primary evidence: dedicated face detector ---
+    # Full bonus only when YOLO also sees face keypoints on the primary subject.
+    # If the detector fired but YOLO sees nothing, a background face within the
+    # bbox is the likely cause.
+    if face_detected and n_face >= 1:
+        score("face_detector", df=3.0, note="MediaPipe fired + YOLO face kps")
+    elif face_detected:
+        score("face_detector", df=1.0, note="MediaPipe fired, no YOLO face kps")
+    else:
+        score("face_detector", note="MediaPipe not used / no face")
+
+    # --- Secondary evidence: YOLO face keypoints ---
+    # Only nose and eyes are reliable front-only indicators.
+    # Ears are visible from both front and back, so excluded here.
+    if n_face >= 2:
+        score("yolo_face_kps", df=3.0, note=f"n_face={n_face} >= 2")
+    elif n_face == 1:
+        score("yolo_face_kps", df=1.2, note="n_face=1 (unreliable)")
+    elif n_face_low >= 1:
+        score("yolo_face_kps", df=0.5, note=f"n_face_low={n_face_low} (low conf)")
+    else:
+        score("yolo_face_kps", note="no face kps")
+
+    # Back evidence: only penalise absent face when there are enough keypoints
+    # overall — if the model barely detected anyone, missing face KPs say
+    # nothing about orientation.
+    if n_face_low == 0 and n_kp_any >= 6:
+        score("back_no_face", db=2.5, note=f"no face at any conf, n_kp_any={n_kp_any}")
+    elif n_face == 0 and n_face_low >= 1:
+        score("back_ghost_face", db=1.5, note="ghost low-conf face kps")
+    elif n_face == 1:
+        score("back_stray_kp", db=0.8, note="single stray face kp")
+    else:
+        score("back_face", note="no back evidence from face kps")
+
+    # --- Tertiary evidence: nose between shoulders ---
+    nose       = kp(keypoints, 0, ch)
+    l_shoulder = kp(keypoints, 5, ch)
+    r_shoulder = kp(keypoints, 6, ch)
+
+    if all(p[2] > 0 for p in [nose, l_shoulder, r_shoulder]):
+        s_min = min(l_shoulder[0], r_shoulder[0])
+        s_max = max(l_shoulder[0], r_shoulder[0])
+        if s_min < nose[0] < s_max:
+            score("nose_in_shoulders", df=1.0, note="nose between shoulders")
+        else:
+            # Nose outside shoulder width — unusual for front view
+            score("nose_outside_shoulders", db=0.5, note="nose outside shoulder width")
+    else:
+        score("nose_shoulders", note="nose or shoulders not visible")
+
+    # --- Quaternary evidence: ear visibility ---
+    # Ears visible without any nose/eyes: back-of-head presentation.
+    # Ears visible alongside nose/eyes: corroborates front view.
+    l_ear = kp(keypoints, 3, ch)
+    r_ear = kp(keypoints, 4, ch)
+    ears_visible = (l_ear[2] > 0) + (r_ear[2] > 0)
+
+    if ears_visible >= 1 and n_face == 0:
+        # Ears with no frontal face features → back
+        score("ears", db=1.2 * ears_visible, note=f"ears={ears_visible} without nose/eyes -> back")
+    elif ears_visible >= 1 and n_face >= 2:
+        # Ears alongside nose/eyes → corroborates front
+        score("ears", df=0.3 * ears_visible, note=f"ears={ears_visible} with nose/eyes -> front")
+    else:
+        # ears_visible >= 1 and n_face == 1: no score either way — ambiguous
+        score("ears", note=f"ears_visible={ears_visible}, no strong signal")
+
+    # --- Quinary: shoulder/hip width ratio ---
+    l_hip = kp(keypoints, 11, ch)
+    r_hip = kp(keypoints, 12, ch)
+
+    if (l_shoulder[2] > 0 and r_shoulder[2] > 0 and
+            l_hip[2] > 0 and r_hip[2] > 0):
+        sh_w  = abs(l_shoulder[0] - r_shoulder[0])
+        hip_w = abs(l_hip[0]      - r_hip[0])
+        ratio = sh_w / (hip_w + 1e-6)
+        if ratio > 1.15:
+            score("sh_hip_ratio", df=0.3, note=f"ratio={ratio:.2f} > 1.15")
+        elif 0.85 < ratio < 1.15:
+            score("sh_hip_ratio", db=0.2, note=f"ratio={ratio:.2f} near 1.0")
+        else:
+            score("sh_hip_ratio", note=f"ratio={ratio:.2f}")
+    else:
+        score("sh_hip_ratio", note="hips/shoulders not both visible")
+
+    # --- Decision ---
+    total = front_score + back_score
+    if total < 0.5:
+        orientation = None  # insufficient evidence
+    elif front_score > 2.5 and front_score > back_score:
+        # Absolute score floor: strong positive front evidence overrides a narrow
+        # margin so patches with e.g. face_detected=True don't end up in 'others'.
+        orientation = 'front'
+    else:
+        margin = abs(front_score - back_score) / total
+        # was 0.20 — fewer genuinely-decided patches wasted
+        orientation = None if margin < 0.12 else ('front' if front_score > back_score else 'back')
+
+    metrics = {"n_face": n_face, "n_face_low": n_face_low, "n_ears": n_ears, "n_kp_any": n_kp_any}
+    return orientation, front_score, back_score, metrics, steps
+
+
 def classify_orientation(keypoints, conf_high=None, face_detected=False):
     """
     Returns 'front', 'back', or None (ambiguous).
@@ -266,108 +402,8 @@ def classify_orientation(keypoints, conf_high=None, face_detected=False):
         face_detected: True if a dedicated face detector fired on this patch.
     """
     ch = conf_high if conf_high is not None else CONF_HIGH
-
-    front_score = 0.0
-    back_score  = 0.0
-
-    # --- Compute face keypoint visibility upfront (needed for both primary and secondary evidence) ---
-    face_indices    = [0, 1, 2]  # nose, l_eye, r_eye only
-    ear_indices     = [3, 4]     # treated separately below
-    n_face          = count_visible(keypoints, face_indices, ch)
-    n_face_low      = count_visible(keypoints, face_indices, CONF_LOW)
-    n_ears          = count_visible(keypoints, ear_indices, ch)
-
-    # Total keypoints detected at any confidence — used to gate back evidence.
-    n_kp_any = count_visible(keypoints, list(range(17)), CONF_LOW)
-
-    # --- Primary evidence: dedicated face detector ---
-    # Full bonus only when YOLO also sees face keypoints on the primary subject.
-    # If the detector fired but YOLO sees nothing, a background face within the
-    # bbox is the likely cause.
-    if face_detected and n_face >= 1:
-        front_score += 3.0
-    elif face_detected:
-        front_score += 1.0
-
-    # --- Secondary evidence: YOLO face keypoints ---
-    # Only nose and eyes are reliable front-only indicators.
-    # Ears are visible from both front and back, so excluded here.
-
-    if n_face >= 2:
-        front_score += 3.0
-    elif n_face == 1:
-        front_score += 1.2   # reduced: single keypoint is unreliable
-    elif n_face_low >= 1:
-        front_score += 0.5
-
-    # Back evidence: only penalise absent face when there are enough keypoints
-    # overall — if the model barely detected anyone, missing face KPs say
-    # nothing about orientation.
-    if n_face_low == 0 and n_kp_any >= 6:
-        back_score += 2.5
-    elif n_face == 0 and n_face_low >= 1:
-        back_score += 1.5   # ghost low-confidence keypoints only
-    elif n_face == 1:
-        back_score += 0.8   # single stray keypoint — likely background noise
-
-    # --- Tertiary evidence: nose between shoulders ---
-    nose       = kp(keypoints, 0, ch)
-    l_shoulder = kp(keypoints, 5, ch)
-    r_shoulder = kp(keypoints, 6, ch)
-
-    if all(p[2] > 0 for p in [nose, l_shoulder, r_shoulder]):
-        s_min = min(l_shoulder[0], r_shoulder[0])
-        s_max = max(l_shoulder[0], r_shoulder[0])
-        if s_min < nose[0] < s_max:
-            front_score += 1.0
-        else:
-            # Nose outside shoulder width — unusual for front view
-            back_score += 0.5
-
-    # --- Quaternary evidence: ear visibility ---
-    # Ears visible without any nose/eyes: back-of-head presentation.
-    # Ears visible alongside nose/eyes: corroborates front view.
-    l_ear = kp(keypoints, 3, ch)
-    r_ear = kp(keypoints, 4, ch)
-    ears_visible = (l_ear[2] > 0) + (r_ear[2] > 0)
-
-    if ears_visible >= 1 and n_face == 0:
-        # Ears with no frontal face features → back
-        back_score += 1.2 * ears_visible
-    elif ears_visible >= 1 and n_face >= 2:
-        # Ears alongside nose/eyes → corroborates front
-        front_score += 0.3 * ears_visible
-    # ears_visible >= 1 and n_face == 1: no score either way — ambiguous
-
-    # --- Quinary: shoulder/hip width ratio ---
-    l_hip = kp(keypoints, 11, ch)
-    r_hip = kp(keypoints, 12, ch)
-
-    if (l_shoulder[2] > 0 and r_shoulder[2] > 0 and
-            l_hip[2] > 0 and r_hip[2] > 0):
-        sh_w  = abs(l_shoulder[0] - r_shoulder[0])
-        hip_w = abs(l_hip[0]      - r_hip[0])
-        ratio = sh_w / (hip_w + 1e-6)
-        if ratio > 1.15:
-            front_score += 0.3
-        elif 0.85 < ratio < 1.15:
-            back_score += 0.2
-
-    # --- Decision ---
-    total = front_score + back_score
-    if total < 0.5:
-        return None  # insufficient evidence
-
-    # Absolute score floor: strong positive front evidence overrides a narrow
-    # margin so patches with e.g. face_detected=True don't end up in 'others'.
-    if front_score > 2.5 and front_score > back_score:
-        return 'front'
-
-    margin = abs(front_score - back_score) / total
-    if margin < 0.12:          # was 0.20 — fewer genuinely-decided patches wasted
-        return None
-
-    return 'front' if front_score > back_score else 'back'
+    orientation, *_ = _classify_orientation_impl(keypoints, ch, face_detected)
+    return orientation
 
 
 def classify_orientation_debug(keypoints, conf_high=None, face_detected=False):
@@ -383,123 +419,22 @@ def classify_orientation_debug(keypoints, conf_high=None, face_detected=False):
             decision, and a list of per-step dicts under 'steps'.
     """
     ch = conf_high if conf_high is not None else CONF_HIGH
-    trace = {"conf_high": ch, "face_detected": face_detected, "steps": []}
-
-    front_score = 0.0
-    back_score  = 0.0
-
-    def record(label, delta_front=0.0, delta_back=0.0, note=""):
-        nonlocal front_score, back_score
-        front_score += delta_front
-        back_score  += delta_back
-        trace["steps"].append({
-            "label": label,
-            "delta_front": delta_front,
-            "delta_back": delta_back,
-            "front_score": round(front_score, 3),
-            "back_score": round(back_score, 3),
-            "note": note,
-        })
-
-    if face_detected:
-        record("face_detector", delta_front=3.0, note="MediaPipe fired")
-    else:
-        record("face_detector", note="MediaPipe not used / no face")
-
-    # --- Secondary evidence: YOLO face keypoints ---
-    # Only nose and eyes are reliable front-only indicators.
-    # Ears are visible from both front and back, so excluded here.
-    face_indices = [0, 1, 2]  # nose, l_eye, r_eye only
-    ear_indices  = [3, 4]
-    n_face     = count_visible(keypoints, face_indices, ch)
-    n_face_low = count_visible(keypoints, face_indices, CONF_LOW)
-    n_ears     = count_visible(keypoints, ear_indices, ch)
-    n_kp_any   = count_visible(keypoints, list(range(17)), CONF_LOW)
-    trace.update({"n_face": n_face, "n_face_low": n_face_low, "n_kp_any": n_kp_any, "n_ears": n_ears})
-
-    if n_face >= 2:
-        record("yolo_face_kps", delta_front=3.0, note=f"n_face={n_face} >= 2")
-    elif n_face == 1:
-        record("yolo_face_kps", delta_front=0.5, note="n_face=1 (unreliable)")
-    elif n_face_low >= 1:
-        record("yolo_face_kps", delta_front=0.5, note=f"n_face_low={n_face_low} (low conf)")
-    else:
-        record("yolo_face_kps", note="no face kps")
-
-    if n_face_low == 0 and n_kp_any >= 6:
-        record("back_no_face", delta_back=1.0, note=f"no face at any conf, n_kp_any={n_kp_any}")
-    elif n_face == 0 and n_face_low >= 1:
-        record("back_ghost_face", delta_back=1.5, note="ghost low-conf face kps")
-    elif n_face == 1:
-        record("back_stray_kp", delta_back=0.8, note="single stray face kp")
-    else:
-        record("back_face", note="no back evidence from face kps")
-
-    nose       = kp(keypoints, 0, ch)
-    l_shoulder = kp(keypoints, 5, ch)
-    r_shoulder = kp(keypoints, 6, ch)
-
-    if all(p[2] > 0 for p in [nose, l_shoulder, r_shoulder]):
-        s_min = min(l_shoulder[0], r_shoulder[0])
-        s_max = max(l_shoulder[0], r_shoulder[0])
-        if s_min < nose[0] < s_max:
-            record("nose_in_shoulders", delta_front=1.0, note="nose between shoulders")
-        else:
-            record("nose_outside_shoulders", delta_back=0.5, note="nose outside shoulder width")
-    else:
-        record("nose_shoulders", note="nose or shoulders not visible")
-
-    l_ear = kp(keypoints, 3, ch)
-    r_ear = kp(keypoints, 4, ch)
-    ears_visible = (l_ear[2] > 0) + (r_ear[2] > 0)
-
-    if ears_visible >= 1 and n_face == 0:
-        record("ears", delta_back=1.2 * ears_visible,
-               note=f"ears={ears_visible} without nose/eyes -> back")
-    elif ears_visible >= 1 and n_face >= 1:
-        record("ears", delta_front=0.3 * ears_visible,
-               note=f"ears={ears_visible} with nose/eyes -> front")
-    else:
-        record("ears", note=f"ears_visible={ears_visible}, no strong signal")
-
-    l_hip = kp(keypoints, 11, ch)
-    r_hip = kp(keypoints, 12, ch)
-
-    if all(p[2] > 0 for p in [l_shoulder, r_shoulder, l_hip, r_hip]):
-        sh_w  = abs(l_shoulder[0] - r_shoulder[0])
-        hip_w = abs(l_hip[0]      - r_hip[0])
-        ratio = sh_w / (hip_w + 1e-6)
-        if ratio > 1.15:
-            record("sh_hip_ratio", delta_front=0.3, note=f"ratio={ratio:.2f} > 1.15")
-        elif 0.85 < ratio < 1.15:
-            record("sh_hip_ratio", delta_back=0.2, note=f"ratio={ratio:.2f} near 1.0")
-        else:
-            record("sh_hip_ratio", note=f"ratio={ratio:.2f}")
-    else:
-        record("sh_hip_ratio", note="hips/shoulders not both visible")
-
-    total    = front_score + back_score
-    margin   = abs(front_score - back_score) / total if total > 0.5 else 0.0
-    override = front_score > 2.5 and front_score > back_score
-
-    trace.update({
-        "front_score": round(front_score, 3),
-        "back_score":  round(back_score, 3),
-        "total":       round(total, 3),
-        "margin":      round(margin, 3),
-        "override_fired": override,
-    })
-
-    if total < 0.5:
-        orientation = None
-    elif override:
-        orientation = 'front'
-    elif margin < 0.12:
-        orientation = None
-    else:
-        orientation = 'front' if front_score > back_score else 'back'
-
-    trace["decision"] = orientation
+    orientation, front_score, back_score, metrics, steps = _classify_orientation_impl(
+        keypoints, ch, face_detected
+    )
+    total = front_score + back_score
+    trace = {
+        "conf_high": ch,
+        "face_detected": face_detected,
+        **metrics,
+        "front_score":    round(front_score, 3),
+        "back_score":     round(back_score, 3),
+        "total":          round(total, 3),
+        "margin":         round(abs(front_score - back_score) / total, 3) if total > 0.5 else 0.0,
+        "override_fired": front_score > 2.5 and front_score > back_score,
+        "decision":       orientation,
+        "steps":          steps,
+    }
     return orientation, trace
 
 

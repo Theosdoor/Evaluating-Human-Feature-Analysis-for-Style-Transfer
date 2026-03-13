@@ -248,7 +248,7 @@ def score_detection(det):
 # Diverse sampling
 # ---------------------------------------------------------------------------
 
-def diverse_sampling(detections, target_count=1000, temporal_gap=30):
+def diverse_sampling(detections, target_count=1000, temporal_gap=10):
     """
     Greedy diverse sampling with per-source temporal gap enforcement.
 

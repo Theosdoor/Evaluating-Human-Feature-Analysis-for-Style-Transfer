@@ -5,7 +5,7 @@
 1.1 - extract human patches from videos. use a lightweight alg to try and select useful frames to extract from
 1.2 - classify into 5 classes (define what geometric features each class includes)
 1.3 - select high quality training data from patches extracted by 1.1 (this should involve some empirical insight)
-2.1 - use some pretrained cyclegan and apply to frame dataset (not human patches - just the frames selected in 1.1). analyse performance w key metrics
+2.1 - use some pretrained image2image network and apply to frame dataset (not human patches - just the frames selected in 1.1). analyse performance w key metrics
 2.2 - make an improved method that EITHER uses 1.1-1.3 methods OR some more advanced temporal approach (i prefer the latter option for extra marks). Then compare the results to 2.1.
 
 
@@ -108,7 +108,7 @@ From the images created in 1.1, propose and develop a method that selects the mo
 
 #### 2.1 Image Model Deployment (20%)
 
-Implement any unpaired image-to-image network (e.g., CycleGAN) for converting images between the game and movie domains.
+Implement any unpaired image-to-image network for converting images between the game and movie domains.
 
 - Download a pretrained model or train from the beginning
 - Apply it to your dataset of frames
