@@ -1,4 +1,13 @@
 # Coursework Brief
+<!-- NOT FOR COPILOT -->
+
+## Brief Summary
+1.1 - extract human patches from videos. use a lightweight alg to try and select useful frames to extract from
+1.2 - classify into 5 classes (define what geometric features each class includes)
+1.3 - select high quality training data from patches extracted by 1.1 (this should involve some empirical insight)
+2.1 - use some pretrained cyclegan and apply to frame dataset (not human patches - just the frames selected in 1.1). analyse performance w key metrics
+2.2 - make an improved method that EITHER uses 1.1-1.3 methods OR some more advanced temporal approach (i prefer the latter option for extra marks). Then compare the results to 2.1.
+
 
 ## Content and Skills Covered
 
@@ -28,7 +37,6 @@ You should submit your report in PDF, along with a ZIP file containing:
 ### Important Notes
 
 - To maintain a small file size, apply proper image and video compression to the multimedia files
-- Do **not** re-submit the original `.mp4` data files
 - If you use other datasets or models, include lines in the code that download them automatically (e.g., `!git clone xxx` or `!wget xxx`)
 - If your Jupyter notebook becomes too large (e.g., 50+ cells, 500+ lines of code, or 10+ distinct class functions), move portions into separate, importable Python files
 - Ensure the main Jupyter notebook remains in the root directory and imports the necessary functions locally
@@ -39,7 +47,18 @@ While the techniques of computer graphics used in games have improved significan
 
 In this assignment, you will implement a deep learning solution to enhance the visual quality of human beings in game videos using some older movies. While it is possible to translate image styles using the whole image, the results would not be good as foreground image styles (i.e., human beings) are mixed up with background styles. With the focus being humans, it is preferable to extract the pixels that are relevant to humans using different human features.
 
-A dataset is available on Blackboard for this assignment, which consists of `.mp4` video files from older movies and from a video game.
+## Dataset
+
+| File | Duration | Size | Resolution | FPS | Frames | Bitrate | Domain |
+|------|----------|------|------------|-----|--------|---------|--------|
+| `downloaded_data/Train/game/MafiaVideogame.mp4` | 2:21:04 | 484 MB | 1280×720 | 30.00 | 253,944 | ~0.5 Mbps | game |
+| `downloaded_data/Train/movie/TheGodfather.mp4` | 0:08:59 | 70 MB | 1280×720 | 23.98 | 12,945 | ~1.1 Mbps | movie |
+| `downloaded_data/Train/movie/TheIrishman.mp4` | 0:15:27 | 114 MB | 1280×720 | 25.06 | 23,236 | ~1.0 Mbps | movie |
+| `downloaded_data/Train/movie/TheSopranos.mp4` | 0:28:43 | 121 MB | 1280×720 | 30.00 | 51,714 | ~0.6 Mbps | movie |
+| `downloaded_data/Test/Test.mp4` | 0:01:10 | 17 MB | 1280×720 | 30.00 | 2,114 | ~2.0 Mbps | game |
+
+**Total training data:** ~53 min movie + ~141 min game  
+**Total test data:** 70 seconds, 2,114 frames @ 30 fps
 
 ## Assignment Questions
 
@@ -47,14 +66,13 @@ A dataset is available on Blackboard for this assignment, which consists of `.mp
 
 #### 1.1 Human Patch Extraction (10%)
 
-For both the game and movie videos under the "Train" folder, adapt a deep learning method to detect individual humans and extract the human image patches.
-
-You will have much more data than what you can process – therefore, propose and develop a lightweight algorithm to gather the more useful frames.
+a) For both the game and movie videos under the "Train" folder, adapt a deep learning method to detect individual humans and extract the human image patches.
+b) You will have much more data than what you can process – therefore, propose and develop a lightweight algorithm to gather the more useful frames.
+c) Explain, justify and evaluate the method you adapted
 
 - Store each patch as one image file
 - Gather 1,000 (or more) image files of human patches
 - Randomly sample and submit 50 image files
-- Explain, justify and evaluate the method you adapted
 
 **Max words: 100**
 
