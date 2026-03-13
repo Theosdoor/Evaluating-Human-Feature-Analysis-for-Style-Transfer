@@ -34,11 +34,16 @@ from src.classification import *
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
 TRAIN_PATHS = [
-    os.path.join(DATA_DIR,"Train/game/MafiaVideogame.mp4"), # TODO v large, so temporarily ignore
+    os.path.join(DATA_DIR,"Train/game/MafiaVideogame.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheGodfather.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheIrishman.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheSopranos.mp4"),
 ]
+# Video durations in seconds (from ffprobe)
+# MafiaVideogame: 2:21:04 = 8464s | TheGodfather: 8:59 = 539s
+# TheIrishman: 15:27 = 927s       | TheSopranos: 28:43 = 1723s
+TRAIN_DURATIONS = [8464, 539, 927, 1723]
+TRAIN_DOMAINS = ['game', 'movie', 'movie', 'movie']  # domain label per video
 
 TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
 SAVE_DIR = os.path.join(PROJECT_ROOT, "output")
@@ -59,7 +64,7 @@ print(f"Using device: {DEVICE}")
 # %%
 # 1.1. Human Patch Extraction
 extract_save_path = os.path.join(SAVE_DIR, "extracted_humans", RELOAD_RUN if RELOAD_RUN else SAVE_NAME)
-n2save = 1000
+n2save = 4000
 detection_b_size = 32  # 2080 Ti (11 GB VRAM) comfortably handles 32 frames/batch
 
 detections = []         # all raw detections (for diagnostics)
@@ -74,9 +79,17 @@ else:
     model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
     model.to(DEVICE)
 
-    # Per-video budget: distribute n2save evenly; remainder goes to last video
-    per_video_target = n2save // len(TRAIN_PATHS)
-    targets = [per_video_target] * len(TRAIN_PATHS)
+    # Equal per-domain budgets: CUT needs balanced domains, so extract ~2000 per domain.
+    # Movie budget is split proportionally by duration across its 3 films.
+    domain_budget = n2save // 2  # 2000 per domain
+    targets = []
+    movie_durations = [d for d, dom in zip(TRAIN_DURATIONS, TRAIN_DOMAINS) if dom == 'movie']
+    movie_total = sum(movie_durations)
+    for dur, dom in zip(TRAIN_DURATIONS, TRAIN_DOMAINS):
+        if dom == 'game':
+            targets.append(domain_budget)
+        else:
+            targets.append(int(domain_budget * dur / movie_total))
     targets[-1] += n2save - sum(targets)  # absorb rounding remainder
 
     for path, target in tqdm(zip(TRAIN_PATHS, targets), desc="Processing training videos", unit="video", total=len(TRAIN_PATHS)):
@@ -86,7 +99,7 @@ else:
             det['score'] = score_detection(det)
         video_dets.sort(key=lambda x: x['score'], reverse=True)
 
-        selected = diverse_sampling(video_dets, target_count=target)
+        selected = diverse_sampling(video_dets, target_count=target, temporal_gap=10)
         save_patches(selected, extract_save_path)
 
         detections += video_dets
