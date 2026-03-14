@@ -5,7 +5,7 @@
 | Stage | Status | Key files |
 |---|---|---|
 | 1.1 — Patch Extraction | ✅ Done | `src/feat_extract.py`, `nb_main.py` |
-| 1.2 — Classification | ✅ Done (testing MediaPipe redundancy) | `src/classification.py` |
+| 1.2 — Classification | 🔄 Reworking → GCN | `src/classification.py` (pseudo-labels), `src/pose_gcn.py` (new) |
 | 1.3 — Training Data Selection | 🔲 Not started | `src/data_selection.py` (new) |
 | 2.1 — Image Model Deployment | 🔲 Not started | `src/style_transfer.py` (new) |
 | 2.2 — Local Temporal Enhancement | 🔲 Not started | `src/video_pipeline.py` (new) |
@@ -45,47 +45,77 @@ Mention: YOLOv8m for person detection, frame differencing to skip duplicates, ba
 
 ---
 
-## 1.2 — Classification (15%) ✅
+## 1.2 — Classification (15%) 🔄
 
-### What's Implemented
+### Method: GCN on Skeleton Graph
 
-[classification.py](file:///Users/Subspace_Explorer/Projects/ACV_cswk/src/classification.py) — evidence-weighted rule-based classifier over YOLOv8-pose keypoints.
+Represent each person's pose as a **graph** and classify with a small **Graph Convolutional Network**. This replaces the previous hand-crafted rule-based classifier with a learned approach that exploits skeletal topology.
 
-**Body extent** (`classify_body_extent`):
-- Full body: ankle visibility (strong), hips + knee (moderate), ≥2 lower-body points (weak)
-- Head-shoulder: ≥1 shoulder or ≥2 upper-body points
-- Aspect-ratio veto: h/w < 1.5 downgrades full\_body → head\_shoulder
+**Transfer learning framing**: YOLOv8-pose (pretrained CNN, frozen) extracts 17 keypoints → GCN (trained from scratch) classifies pose type. The pretrained detector is the feature extractor; the GCN is the task-specific head.
 
-**Orientation** (`classify_orientation`): accumulates `front_score` / `back_score`:
-- MediaPipe face detection: +3.0 front (strongest signal)
-- YOLO face keypoints (nose, eyes): +3.0 for ≥2, +1.2 for 1
-- Back evidence: +2.5 when no face at any confidence but ≥6 keypoints overall
-- Nose between shoulders: +1.0 front
-- Ears without face: +1.2 per ear back
-- Shoulder/hip width ratio: +0.3 front or +0.2 back
-- Margin < 0.12 → `others` (ambiguous)
+#### Graph Construction
 
-**Adaptive threshold** (`adaptive_conf_high`): per-patch confidence floor from median keypoint confidence, clipped to [0.15, 0.30]. Handles film footage having systematically lower pose confidence.
+- **17 nodes** — one per COCO keypoint
+- **~16 edges** — following the anatomical skeleton (nose↔L_eye, L_hip↔L_knee, etc.)
+- **Node features**: `(x/w, y/h, confidence)` — normalised to bounding box for translation/scale invariance
+- **Adjacency matrix `A`** — fixed, binary, symmetric; same for every sample
 
-### Open Question: MediaPipe Redundancy
+```
+        nose
+       / | \
+    L_eye  R_eye
+      |      |
+   L_ear   R_ear
+       \   /
+    L_shoulder─R_shoulder
+      |           |
+    L_elbow    R_elbow
+      |           |
+    L_wrist    R_wrist
+      |           |
+    L_hip───── R_hip
+      |           |
+    L_knee     R_knee
+      |           |
+    L_ankle    R_ankle
+```
 
-Currently testing whether MediaPipe face detection adds value over YOLO keypoints alone:
-- MediaPipe contributes +3.0 to `front_score` (strongest single signal)
-- But YOLO face keypoints (≥2 visible) also contribute +3.0
-- If both fire on the same patches (high correlation), MediaPipe is redundant overhead
+#### GCN Architecture
 
-**Test**: Run classification with `face_detector=None` and compare results. If the `others` class grows significantly (many patches lose the front evidence floor), MediaPipe is earning its keep. If distribution stays similar, remove it.
+```
+Input: (17, 3)  →  GCNConv(3→64) + ReLU + Dropout
+                →  GCNConv(64→128) + ReLU + Dropout
+                →  GCNConv(128→64) + ReLU
+                →  Global Mean Pool  →  (64,)
+                →  Linear(64→5)      →  softmax
+```
 
-**Impact of removal**: Simplifies pipeline (no external .tflite download), removes `mediapipe` dependency, slightly faster per-image. No effect on body extent classification.
+~10K parameters. Trains in seconds on CPU. Each GCN layer aggregates neighbour features: after 2–3 hops, every joint "sees" the full skeleton.
 
-### Potential Improvements
+#### Training Labels: Pseudo-Label Strategy
 
-- [ ] **Remove MediaPipe if redundant** — pending test results
-- [ ] **GCN classifier** — possible but likely circular (training on pseudo-labels from these same rules). Not recommended unless you have hand-labelled ground truth. Discuss in report as potential improvement only.
+No hand-labelled ground truth exists. Strategy:
+
+1. **Pseudo-labels**: Run existing rule-based classifier (`classification.py`) on all ~4000 patches → noisy labels
+2. **Train GCN** on pseudo-labels (80/20 split, ~30s on CPU)
+3. **Hand-label ~150 patches** (30/class) as a held-out validation set
+4. **Evaluate**: Compare GCN vs rules on the hand-labelled set
+
+The GCN is not circular — it _generalises_ from the heuristic patterns and learns to handle the edge cases where rigid rules fail. Report discusses patches where GCN and rules disagree.
+
+#### Existing Rule-Based Classifier (Retained for Pseudo-Labels)
+
+[classification.py](file:///Users/Subspace_Explorer/Projects/ACV_cswk/src/classification.py) — evidence-weighted rules over YOLOv8-pose keypoints.
+
+- **Body extent**: ankle/knee visibility → full body; shoulder/upper-body points → head-shoulder; aspect-ratio veto
+- **Orientation**: face keypoint patterns, nose-between-shoulders, ear evidence, shoulder/hip width ratio
+- **Adaptive threshold**: per-patch confidence floor from median keypoint confidence
+
+These rules become the pseudo-label generator. MediaPipe dependency is removed (YOLO keypoints sufficient for pseudo-labels; GCN learns finer distinctions).
 
 ### Report Notes (100 words max)
 
-Mention: YOLOv8-pose 17 COCO keypoints, evidence-weighted scoring, adaptive confidence threshold for film/game consistency, geometric rules for body extent (ankle/knee visibility) and orientation (face keypoint patterns). Justify the rule-based approach: no labelled training data, geometric features are directly interpretable.
+Mention: YOLOv8-pose as pretrained feature extractor (transfer learning), skeleton represented as graph (17 nodes, COCO topology), GCN learns pose classification from graph structure. Pseudo-labels from geometric rules bootstrap training; hand-labelled validation set evaluates. Show confusion matrix (GCN vs rules vs hand-labels), discuss disagreement cases. Justify GCN over rules: learns implicit spatial relationships (joint angles, relative positions) not captured by threshold-based heuristics.
 
 ---
 
@@ -95,11 +125,22 @@ Mention: YOLOv8-pose 17 COCO keypoints, evidence-weighted scoring, adaptive conf
 
 Select high-quality, diverse patches for CUT training. The brief requires **original observations and insights** — the method must be motivated by empirical analysis, not just applied off-the-shelf.
 
-### Method: Quality Filter → Diversity Selection
+### Method: Quality Filter → Joint Diversity Selection
 
 1. **Quality floor**: Drop patches with extraction score < 0.6 (~trims worst 10%)
-2. **DINO diversity**: `vit_small_patch8_224.dino` (via `timm`) → 384-dim CLS token → k-means per domain → stratified sample from clusters by score
-3. **Domain balance**: k-means run separately on game and movie pools. Target **~450 patches per domain**
+2. **Dual-space diversity**: Concatenate two complementary feature vectors per patch:
+   - **DINO** (`vit_small_patch8_224.dino` via `timm`) → 384-dim CLS token — **appearance** diversity (colour, texture, framing)
+   - **GCN graph embedding** (from 1.2, penultimate layer) → 64-dim — **pose** diversity (body configuration, orientation)
+   - L2-normalise each, concatenate → 448-dim joint vector
+3. **k-means** on joint vectors per domain → stratified sample from clusters by score
+4. **Domain balance**: target **~450 patches per domain**
+
+### Key Insight: Appearance ≠ Pose Diversity
+
+> [!IMPORTANT]
+> Two patches can look visually similar (same lighting, same film) but have very different poses, and vice versa. Selecting on DINO alone misses pose diversity; selecting on pose alone misses visual diversity. Joint selection ensures coverage in both spaces.
+
+Visualize with UMAP: colour by pose class vs. DINO cluster → they won't align, proving complementarity.
 
 ### Empirical Insights for the Report
 
@@ -121,25 +162,20 @@ Grid of 12–15 patches ordered by Laplacian variance (lowest → highest) with 
 
 **Insight → choice**: Clear visual cliff at threshold N → empirically grounded quality floor, not arbitrary.
 
-#### C. UMAP Embedding Visualisation ⭐
+#### C. UMAP Embedding Visualisation — Dual Space ⭐⭐
 
-Two side-by-side scatters (DINO features):
-1. Coloured by domain (game/movie) — shows separation
-2. Coloured by source film — shows sub-clusters within movie domain
+Three side-by-side scatters:
+1. DINO features, coloured by **pose class** (from GCN) — pose classes scatter across DINO space
+2. GCN embeddings, coloured by **source film** — films mix in pose space
+3. Joint (DINO+GCN) features, coloured by **k-means cluster** — clusters capture both dimensions
 
-**Insight → choice**: Movie fragments into per-film clusters → naive random sampling over-represents the densest cluster → k-means per-cluster sampling ensures representation.
+**Insight → choice**: Neither feature space alone captures full diversity → joint selection is necessary.
 
-#### D. Patch Scale Distribution
+#### D. Pose-Class Balance Before/After Selection
 
-Bbox area histograms per source. Game = more distant wide shots; movie = more close-ups.
+Bar chart: pose-class distribution in raw pool vs. DINO-only selection vs. joint selection.
 
-**Insight → choice**: Extreme size outliers (very small patches upscaled to 256×256) degrade CUT training → motivate minimum bbox area filter.
-
-#### E. Pairwise Distance Before/After Selection
-
-Box plot of mean pairwise cosine distance: random 450 vs DINO-selected 450.
-
-**Insight → choice**: Quantitative proof that selection increases diversity.
+**Insight → choice**: DINO-only under-represents rare poses (e.g., full-body back); joint selection re-balances.
 
 ### Implementation
 
@@ -148,6 +184,7 @@ Box plot of mean pairwise cosine distance: random 450 vs DINO-selected 450.
 ```python
 select_training_data(
     classifications_dir,       # output/classifications/<timestamp>
+    gcn_model,                 # trained PoseGCN from 1.2
     output_dir,                # output/selected_for_training/
     min_score=0.6,
     n_clusters=50,             # per domain
@@ -158,7 +195,7 @@ select_training_data(
 
 ### Prerequisite
 
-Re-extract MafiaVideogame with higher `n2save` (see 1.1 improvements).
+Re-extract MafiaVideogame with higher `n2save` (see 1.1 improvements). Train GCN (1.2) first.
 
 ### Output
 
@@ -167,8 +204,9 @@ output/selected_for_training/
     game/       # ~450 patches
     movie/      # ~450 patches
     _selection_summary.txt
-    umap_plot.png
+    umap_dual_space.png
     color_distributions.png
+    pose_balance.png
 ```
 
 ---
@@ -280,7 +318,7 @@ The brief offers two paths:
 1. *"Local information from 1.1–1.3"*
 2. *"Advanced temporal approach — extra credit"*
 
-**We do both.**
+**We do both.** The skeleton graph from 1.2 threads through: classification → data selection → temporal consistency.
 
 ### Stage 1 — Local Patch Application
 
@@ -294,27 +332,73 @@ Re-run YOLOv8-pose on `Test.mp4` → crop human patches → CUT → composite ba
 1. **`cv2.seamlessClone`** (`NORMAL_CLONE`): best quality, but bbox must be ≥5px from frame border
 2. **Gaussian feathering**: alpha blend with soft mask (~10px border taper). Fallback for edge-case bboxes
 
-### Stage 2 — Temporal Consistency
+### Stage 2 — Skeleton-Graph Temporal Consistency
 
-**Primary method: EMA patch blending** (simple, always works):
+Use the skeleton graph representation from 1.2 to guide temporal blending — a **semantically-aware** alternative to pixel-level optical flow.
 
-```
-translated[t] = β * CUT(crop[t]) + (1-β) * translated[t-1]
-```
+#### Core Idea
 
-β derived from IoU(bbox[t], bbox[t-1]). Low overlap (new person / fast motion) → β≈1 (no blending). High overlap (stationary) → temporal smoothing.
-
-**Advanced method: RAFT optical flow** (extra credit):
+YOLOv8-pose already runs per-frame (for patch extraction). The 17 keypoints form a skeleton graph that captures **how the person is moving**. Compare skeletons across consecutive frames to decide blending strength:
 
 ```
-output[t] = α * stylized[t] + (1-α) * warp(output[t-1], flow[t-1→t])
+Frame t-1:  skeleton G_{t-1}  ──┐
+                                ├── pose_similarity → blending weight β
+Frame t:    skeleton G_t      ──┘
+
+output[t] = β · CUT(crop[t]) + (1-β) · output[t-1]
 ```
 
-- `torchvision.models.optical_flow.raft_small` (pretrained, ~1 GB VRAM)
-- α=0.7, scene cuts (reuse `frame_difference` from 1.1) → reset buffer
-- Warp via `torch.nn.functional.grid_sample`
+#### Two Similarity Metrics (compare in ablation)
 
-**Build order**: EMA first → working video → add RAFT on top. Always have a submittable output.
+**A. Joint displacement** (simple, fast):
+```python
+# Mean normalised Euclidean distance between matched keypoints
+# Only count keypoints visible in both frames (conf > threshold)
+dist = mean(||kp_t[i] - kp_{t-1}[i]||_2 for i in visible_both)
+# Normalise by bbox diagonal for scale invariance
+similarity = 1 - clamp(dist / bbox_diag, 0, 1)
+```
+
+**B. Graph embedding distance** (richer, uses trained GCN):
+```python
+# Pass both skeletons through GCN from 1.2 (penultimate layer → 64-dim)
+emb_t   = gcn.embed(graph_t)      # (64,)
+emb_t1  = gcn.embed(graph_{t-1})   # (64,)
+similarity = cosine_similarity(emb_t, emb_t1)
+```
+
+Method B captures **structural** similarity — two poses can have similar joint positions but different body configurations (e.g., arms crossed vs. arms at sides). The GCN embedding encodes topology-aware features.
+
+#### Blending Logic
+
+```python
+if similarity > 0.9:    # near-identical pose → heavy smoothing
+    β = 0.3
+elif similarity < 0.3:  # new person / scene cut → fresh output
+    β = 1.0
+else:                   # proportional
+    β = lerp(0.3, 1.0, 1 - similarity)
+```
+
+Scene cuts (reuse `frame_difference` from 1.1) → reset buffer entirely (β=1.0, flush history).
+
+#### Comparison with RAFT Optical Flow
+
+| | Skeleton-graph temporal | RAFT optical flow |
+|---|---|---|
+| **Signal** | 17 joint positions (sparse, semantic) | Dense pixel-level flow field |
+| **Captures** | Body pose changes, gait | All motion (clothing, hair, background) |
+| **Cost** | ~Free (reuses YOLO keypoints) | ~1 GB VRAM, ~0.1s/frame |
+| **Warping** | No — guides blending weight only | Yes — warps previous frame pixel-by-pixel |
+| **Failure mode** | Misses fine-grained motion (hair, fabric) | Expensive; flow errors cause ghosting |
+| **Report value** | Novel, ties whole pipeline together | Well-known off-the-shelf method |
+
+RAFT is more powerful for **pixel-precise** temporal consistency (it can warp frames), but the skeleton approach is:
+- Cheaper (no extra model)
+- Semantically meaningful ("the person moved their arm" vs. "pixels shifted")
+- A **unifying narrative** across 1.2→1.3→2.2
+
+**Build order**: Skeleton-graph temporal first (primary method) → optionally add RAFT for pixel-level warping comparison if time permits.
 
 ### VRAM Budget (RTX 2080 Ti — 11 GB)
 
@@ -322,31 +406,42 @@ output[t] = α * stylized[t] + (1-α) * warp(output[t-1], flow[t-1→t])
 |---|---|
 | YOLOv8m (FP16) | ~0.8 GB |
 | CUT generator | ~0.5 GB |
-| RAFT small | ~1.0 GB |
+| PoseGCN (tiny) | ~0.01 GB |
 | CUDA overhead + activations | ~3–5 GB |
-| **Total** | **~5–7 GB** ✅ |
+| **Total** | **~4–6 GB** ✅ |
+
+(RAFT adds ~1 GB if used as optional comparison.)
 
 ### Quantitative Comparison: 2.1 vs 2.2
 
-- **Warping error**: avg pixel diff between warped stylised frame and next stylised frame. Lower = more temporally consistent.
-- **FID on patches**: compare FID of CUT-translated patches (2.2) vs full-frame crops (2.1) against real movie patches.
-- Visual comparison: 10+ keyframe triplets (original → 2.1 full-frame → 2.2 local+temporal).
+- **Temporal flicker metric**: mean absolute pixel diff between consecutive stylised frames (lower = more temporally consistent)
+- **FID on patches**: CUT-translated patches (2.2) vs full-frame crops (2.1) against real movie patches
+- **Ablation**: no temporal → EMA+IoU → skeleton-joint → skeleton-GCN (→ RAFT if time)
+- Visual comparison: 10+ keyframe triplets (original → 2.1 full-frame → 2.2 local+temporal)
 
 ### Implementation
 
 **New file**: `src/video_pipeline.py`
 
 ```python
-apply_local_style_transfer(
+def skeleton_similarity(
+    kps_prev, kps_curr, gcn_model=None, method='joint_displacement'
+) -> float:
+    """Compute pose similarity between two frames' skeletons."""
+
+def apply_local_style_transfer(
     model, yolo_model, video_path, output_path,
     device, blend_mode='poisson',
-) -> None
+) -> None:
+    """Stage 1: local patch CUT, no temporal blending."""
 
-apply_temporal_style_transfer(
-    model, yolo_model, flow_model,   # RAFT (None for EMA-only)
-    video_path, output_path, device,
-    alpha=0.7, scene_change_threshold=30.0,
-) -> None
+def apply_temporal_style_transfer(
+    model, yolo_model, video_path, output_path, device,
+    gcn_model=None,                  # PoseGCN for embedding similarity
+    temporal_method='skeleton_gcn',  # 'ema_iou' | 'skeleton_joint' | 'skeleton_gcn' | 'raft'
+    scene_change_threshold=30.0,
+) -> None:
+    """Stage 2: local patch CUT + temporal blending."""
 ```
 
 **New file**: `scripts/run_test_video.sh` (Slurm wrapper)
@@ -357,8 +452,9 @@ apply_temporal_style_transfer(
 output/
     test_baseline_full_frame.mp4   # 2.1 applied to full frames (for comparison)
     test_local.mp4                 # 2.2 Stage 1: local-only
-    test_temporal.mp4              # 2.2 Stage 2: local + temporal
+    test_temporal.mp4              # 2.2 Stage 2: local + skeleton temporal
     test_keyframes/                # 10+ comparison frames
+    temporal_ablation/             # flicker metrics per method
 ```
 
 ---
@@ -367,9 +463,10 @@ output/
 
 | File | Purpose |
 |---|---|
-| `src/data_selection.py` | 1.3 — DINO features, k-means, balanced sampling, insight plots |
+| `src/pose_gcn.py` | 1.2 — Graph construction, GCN model, training, embedding extraction |
+| `src/data_selection.py` | 1.3 — DINO + GCN features, k-means, balanced sampling, insight plots |
 | `src/style_transfer.py` | 2.1 — CUT data prep, normalisation, generator loading, evaluation |
-| `src/video_pipeline.py` | 2.2 — Local patch application, EMA + RAFT temporal blending |
+| `src/video_pipeline.py` | 2.2 — Local patch application, skeleton-graph temporal blending |
 | `scripts/train_cut.sh` | Slurm job for CUT training |
 | `scripts/run_test_video.sh` | Slurm job for test video processing |
 
@@ -379,18 +476,21 @@ output/
 
 ```
  1. Re-extract MafiaVideogame with higher n2save; adjust per-video targets
- 2. (Optional) Test classification with face_detector=None → decide MediaPipe
- 3. Run 1.3 data selection → output/selected_for_training/{game,movie}/
- 4. Generate insight plots for report (color distributions, UMAP, blur spectrum)
- 5. Clone junyanz/pytorch-CycleGAN-and-pix2pix → external/cyclegan/
- 6. Prepare CUT data (symlinks trainA/trainB)
- 7. Train CUT (Slurm, ~2–3 hours)
- 8. Evaluate CUT: FID + SSIM + success/failure pairs on full frames
- 9. Build local style transfer pipeline (2.2 Stage 1)
-10. Generate test_local.mp4
-11. Add temporal blending — EMA first, then RAFT if time permits
-12. Generate test_temporal.mp4
-13. Extract keyframes + compute warping error for report
+ 2. Generate pseudo-labels with rule-based classifier → bootstrap labels
+ 3. Train PoseGCN on pseudo-labels (~30s CPU) → src/pose_gcn.py
+ 4. Hand-label ~150 patches → evaluate GCN vs rules
+ 5. Run 1.3 data selection (DINO + GCN joint features) → output/selected_for_training/
+ 6. Generate insight plots (color distrib, dual-space UMAP, pose balance)
+ 7. Clone junyanz/pytorch-CycleGAN-and-pix2pix → external/cyclegan/
+ 8. Prepare CUT data (symlinks trainA/trainB)
+ 9. Train CUT (Slurm, ~2–3 hours)
+10. Evaluate CUT: FID + SSIM + success/failure pairs on full frames
+11. Build local style transfer pipeline (2.2 Stage 1)
+12. Generate test_local.mp4
+13. Add skeleton-graph temporal blending (2.2 Stage 2)
+14. Generate test_temporal.mp4
+15. Temporal ablation: no-temporal → EMA+IoU → skeleton-joint → skeleton-GCN
+16. Extract keyframes + compute flicker metrics for report
 ```
 
 ---
@@ -401,15 +501,35 @@ output/
 |---|---|
 | CUT doesn't converge | Monitor loss; extend to 200 epochs or try `--CUT_mode FastCUT` |
 | Too few game patches | Re-extract MafiaVideogame with n2save=1500 |
-| RAFT + CUT exceeds 11 GB | Use `raft_small`; if OOM, run sequentially with `torch.cuda.empty_cache()` |
+| Pseudo-labels too noisy for GCN | Hand-label 150 patches for validation; clean obvious misclassifications |
+| GCN overfits on tiny dataset | Heavy dropout (0.3), weight decay; model is only ~10K params |
 | `seamlessClone` fails at frame edges | Fall back to Gaussian feathering per-detection |
-| Temporal blending ghosting | Increase α; disable blending when flow magnitude exceeds threshold |
-| RAFT too complex / slow | EMA is primary method; RAFT is additive extra credit |
+| Skeleton temporal misses fine motion | Acknowledge as limitation; RAFT is optional pixel-level comparison |
+| Keypoint not detected in frame | Fall back to IoU-based EMA when <5 keypoints visible |
 
 ---
 
 ## Report Figures
 
-1. **1.3**: Per-film HSV violins, blur spectrum grid, UMAP scatter (domain + film-coloured)
-2. **2.1**: Input/output grid, FID over epochs, 10 success + 10 failure pairs, full-frame limitation discussion
-3. **2.2**: Keyframe triplets (original → 2.1 → 2.2), warping error plot, seam boundary zoom
+1. **1.2**: Skeleton graph visualisation, GCN architecture diagram, confusion matrix (GCN vs rules vs hand-labels)
+2. **1.3**: Dual-space UMAP (DINO vs GCN vs joint), per-film HSV violins, pose-class balance bar chart
+3. **2.1**: Input/output grid, FID over epochs, 10 success + 10 failure pairs, full-frame limitation discussion
+4. **2.2**: Keyframe triplets (original → 2.1 → 2.2), temporal ablation flicker plot, seam boundary zoom
+
+---
+
+## Unifying Narrative: Skeleton Graph Throughout
+
+The skeleton graph representation threads through the entire pipeline:
+
+```
+1.1  YOLOv8-pose → 17 keypoints per detection
+        ↓
+1.2  Skeleton graph → GCN → pose classification (5 classes)
+        ↓
+1.3  GCN embeddings + DINO features → joint diversity selection
+        ↓
+2.2  Skeleton similarity across frames → temporal blending weight
+```
+
+This is the **core technical contribution** to emphasise in the report: a single geometric representation (skeleton graph) unifies feature extraction, classification, data curation, and temporal consistency.
