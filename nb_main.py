@@ -31,6 +31,7 @@ from ultralytics import YOLO # https://github.com/ultralytics/ultralytics
 
 from src.feat_extract import *
 from src.classification import *
+from src.utils import *
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
 TRAIN_PATHS = [
@@ -53,7 +54,7 @@ SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
 # Leave as None to run the full pipeline from scratch.
 # e.g. RELOAD_RUN = "20260224-224712"
 RELOAD_RUN = None
-# RELOAD_RUN = "20260225-104100"
+# RELOAD_RUN = "20260314-195748"
 
 # Set True to re-run classification even when RELOAD_RUN is set.
 RECLASSIFY = True # need RELOAD_RUN != None to use this
@@ -72,8 +73,6 @@ yolo_interval=10
 scene_change_threshold=8.0
 blur_threshold_film=40.0
 blur_threshold_game=100.0
-
-
 
 detections = []         # all raw detections (for diagnostics)
 selected_detections = []
@@ -123,21 +122,17 @@ else:
 # %%
 # 1.2. Classification
 cls_input_path = extract_save_path
-cls_save_path = os.path.join(SAVE_DIR, "classifications", os.path.basename(extract_save_path))
+cls_base_dir = os.path.join(SAVE_DIR, "classifications")
+if RELOAD_RUN and RECLASSIFY:
+    cls_save_path = get_next_reclassify_dir(cls_base_dir, os.path.basename(extract_save_path))
+else:
+    cls_save_path = os.path.join(cls_base_dir, os.path.basename(extract_save_path))
 classify_b_size = 32
 
 if RELOAD_RUN and not RECLASSIFY:
     # Reload existing classification results
     results, summary = reload_classification_results(cls_save_path)
 else:
-    # Clean up stale files from previous classification runs if reclassifying
-    if RELOAD_RUN and RECLASSIFY:
-        import shutil
-        for cls in CLASSES:
-            cls_dir = os.path.join(cls_save_path, cls)
-            if os.path.isdir(cls_dir):
-                shutil.rmtree(cls_dir)
-
     pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
     pose_model.to(DEVICE)
 

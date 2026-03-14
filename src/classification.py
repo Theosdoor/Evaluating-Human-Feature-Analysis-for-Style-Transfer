@@ -1,16 +1,30 @@
 """
+quote - A patch is classified as front if YOLO detects nose and both eyes above a confidence threshold, 
+back if all three are absent, and others otherwise — correctly routing side profiles, 
+which produce partial face detections, into the ambiguous class.
+
 1.2
 classification.py
 
 Pose-based human patch classification into five categories:
   full_body_front, full_body_back, head_shoulder_front, head_shoulder_back, others
 
-Key improvements over original:
-  - Batched YOLO inference rather than one image at a time
-  - Front/back uses a weighted evidence system rather than a single geometry check
-  - Confidence-aware fallback: ambiguous cases go to 'others' rather than
-    defaulting to front, which inflates that class
-  - classify_directory() returns per-image results and a summary dict
+Classification logic
+--------------------
+Orientation (applied first):
+  front  — nose AND both eyes visible above confidence threshold.
+           Requires bilateral facial symmetry; a side profile will typically
+           missing one eye and fail this test.
+  back   — none of nose, left_eye, right_eye visible even at low confidence.
+           A side profile produces at least a partial nose detection, so it
+           falls through to 'others' rather than being misclassified as back.
+  others — anything else (side-on, occluded, ambiguous).
+
+Extent (applied only once orientation is decided):
+  full_body     — lower-body keypoints (hips/knees/ankles) visible, corroborated
+                  by bounding-box aspect ratio h/w >= 1.5.
+  head_shoulder — shoulders or upper-body keypoints visible, lower-body absent.
+  others        — insufficient keypoints to determine extent.
 
 COCO keypoint indices (17 points):
   0: nose          1: left_eye      2: right_eye
@@ -21,22 +35,27 @@ COCO keypoint indices (17 points):
  15: left_ankle   16: right_ankle
 """
 
-import os
 import glob
+import os
 import shutil
-from pathlib import Path
 
 import cv2
 import numpy as np
 from tqdm import tqdm
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-CONF_HIGH = 0.35      # Confident keypoint detection
-CONF_LOW  = 0.15      # Marginal — used only as tiebreaker evidence
+# Keypoint confidence thresholds.
+# FACE_CONF: minimum confidence to consider a face keypoint present.
+# BACK_CONF:  maximum confidence below which a face keypoint is considered
+#             absent — slightly relaxed to absorb YOLO noise on low-quality frames.
+FACE_CONF = 0.30
+BACK_CONF = 0.10  # all face KPs must be below this to call 'back'
+
+# Minimum confidence for lower/upper body keypoints.
+BODY_CONF = 0.20
 
 CLASSES = [
     'full_body_front',
@@ -46,341 +65,107 @@ CLASSES = [
     'others',
 ]
 
+# COCO index groups
+FACE_KPS   = [0, 1, 2]        # nose, left_eye, right_eye
+LOWER_KPS  = [11, 12, 13, 14, 15, 16]  # hips, knees, ankles
+ANKLE_KPS  = [15, 16]
+UPPER_KPS  = [5, 6]            # shoulders (minimum upper-body signal)
+
 
 # ---------------------------------------------------------------------------
-# Adaptive confidence threshold
+# Helpers
 # ---------------------------------------------------------------------------
 
-def adaptive_conf_high(keypoints):
+def n_visible(keypoints: np.ndarray, indices: list[int], threshold: float) -> int:
+    return sum(1 for i in indices if keypoints[i, 2] >= threshold)
+
+
+# ---------------------------------------------------------------------------
+# Orientation
+# ---------------------------------------------------------------------------
+
+def classify_orientation(keypoints: np.ndarray) -> str | None:
     """
-    Compute a per-patch confidence threshold from the median keypoint confidence.
+    Returns 'front', 'back', or None (side-on / ambiguous → 'others').
 
-    Film footage tends to have systemically lower pose confidence than game
-    footage; a hard global threshold discards too much useful signal.  We use
-    median - 0.1, clipped to [0.15, 0.30] so we never accept near-random
-    detections or set the bar higher than the default CONF_HIGH.
+    front: nose AND both eyes above FACE_CONF.
+    back:  all of nose, left_eye, right_eye below BACK_CONF.
+    None:  partial face visibility — side profile or occluded.
     """
-    median_conf = float(np.median(keypoints[:, 2]))
-    return float(np.clip(median_conf - 0.1, 0.15, 0.30))
+    nose_conf    = keypoints[0, 2]
+    left_eye_conf  = keypoints[1, 2]
+    right_eye_conf = keypoints[2, 2]
+
+    all_face_present = (
+        nose_conf      >= FACE_CONF and
+        left_eye_conf  >= FACE_CONF and
+        right_eye_conf >= FACE_CONF
+    )
+    all_face_absent = (
+        nose_conf      < BACK_CONF and
+        left_eye_conf  < BACK_CONF and
+        right_eye_conf < BACK_CONF
+    )
+
+    if all_face_present:
+        return 'front'
+    if all_face_absent:
+        return 'back'
+    return None  # partial — side-on or ambiguous
 
 
 # ---------------------------------------------------------------------------
-# Keypoint helpers
+# Body extent
 # ---------------------------------------------------------------------------
 
-def kp(keypoints, idx, threshold=CONF_HIGH):
-    """
-    Return (x, y, conf) for keypoint `idx`.
-    If confidence is below threshold, returns (0, 0, 0) to signal invisible.
-    """
-    x, y, c = keypoints[idx]
-    if c < threshold:
-        return (0.0, 0.0, 0.0)
-    return (float(x), float(y), float(c))
-
-
-def is_visible(keypoints, idx, threshold=CONF_HIGH):
-    return float(keypoints[idx][2]) >= threshold
-
-
-def count_visible(keypoints, indices, threshold=CONF_HIGH):
-    return sum(1 for i in indices if is_visible(keypoints, i, threshold))
-
-
-# ---------------------------------------------------------------------------
-# Body extent classification
-# ---------------------------------------------------------------------------
-
-def classify_body_extent(keypoints, conf_high=None, bbox=None):
+def classify_extent(keypoints: np.ndarray, bbox: np.ndarray | None) -> str | None:
     """
     Returns 'full_body', 'head_shoulder', or None (insufficient keypoints).
 
-    Full body requires evidence of lower limbs.
-    Head-shoulder requires at least one shoulder visible.
-
-    Args:
-        conf_high: adaptive confidence threshold; falls back to CONF_HIGH if None.
-        bbox:      (x1, y1, x2, y2) from the pose model; used to veto full_body
-                   when aspect ratio (h/w) < 1.5 — a patch that is not
-                   substantially taller than wide cannot contain a standing
-                   full body.
+    full_body requires lower-body evidence AND a plausible aspect ratio.
+    head_shoulder requires at least one shoulder visible.
     """
-    ch = conf_high if conf_high is not None else CONF_HIGH
+    n_lower  = n_visible(keypoints, LOWER_KPS, BODY_CONF)
+    n_ankles = n_visible(keypoints, ANKLE_KPS, BODY_CONF)
 
-    # Lower body evidence
-    lower_indices = [11, 12, 13, 14, 15, 16]  # hips, knees, ankles
-    ankle_indices = [15, 16]
+    has_lower_body = n_ankles >= 1 or n_lower >= 3
 
-    n_lower     = count_visible(keypoints, lower_indices, ch)
-    n_ankles    = count_visible(keypoints, ankle_indices, ch)
-    n_lower_low = count_visible(keypoints, lower_indices, CONF_LOW)
+    if has_lower_body:
+        # Aspect-ratio sanity check: a standing full-body patch should be
+        # clearly taller than wide.  Fails for crouching/seated subjects but
+        # avoids mislabelling wide head-shoulder crops.
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            h = y2 - y1
+            w = (x2 - x1) + 1e-6
+            if h / w < 1.5:
+                return 'head_shoulder'
+        return 'full_body'
 
-    # Strong case: ankles visible
-    if n_ankles >= 1:
-        extent = 'full_body'
+    if n_visible(keypoints, UPPER_KPS, BODY_CONF) >= 1:
+        return 'head_shoulder'
 
-    # Moderate case: hips + at least one knee
-    elif count_visible(keypoints, [11, 12, 13, 14], ch) >= 3:
-        extent = 'full_body'
-
-    # Weak case: two or more lower body points at low confidence
-    elif n_lower >= 2 or n_lower_low >= 3:
-        extent = 'full_body'
-
-    else:
-        # Upper body check
-        upper_indices = [0, 1, 2, 3, 4, 5, 6]  # face + shoulders
-        n_upper     = count_visible(keypoints, upper_indices, ch)
-        n_shoulders = count_visible(keypoints, [5, 6], ch)
-
-        if n_shoulders >= 1 or n_upper >= 2:
-            extent = 'head_shoulder'
-        else:
-            return None  # not enough to classify
-
-    # Aspect-ratio veto: a bounding box that is not clearly taller than wide
-    # (h/w < 1.5) is implausible for a standing full-body detection.
-    if extent == 'full_body' and bbox is not None:
-        x1, y1, x2, y2 = bbox
-        h = y2 - y1
-        w = (x2 - x1) + 1e-6
-        if h / w < 1.5:
-            extent = 'head_shoulder'
-
-    return extent
+    return None  # not enough to decide
 
 
 # ---------------------------------------------------------------------------
-# Front / back classification
+# Top-level per-patch classifier
 # ---------------------------------------------------------------------------
 
-def _classify_orientation_impl(keypoints, ch):
-    """
-    Core scoring engine shared by classify_orientation and classify_orientation_debug.
-
-    Always builds a steps list (used by the debug wrapper; negligible overhead
-    in the production path).
-
-    Returns
-    -------
-    orientation : 'front' | 'back' | None
-    front_score, back_score : float
-    metrics : dict with n_face, n_face_low, n_ears, n_kp_any
-    steps   : list of per-step score dicts
-    """
-    front_score = 0.0
-    back_score  = 0.0
-    steps: list = []
-
-    def score(label, df=0.0, db=0.0, note=""):
-        nonlocal front_score, back_score
-        front_score += df
-        back_score  += db
-        steps.append({
-            "label": label, "delta_front": df, "delta_back": db,
-            "front_score": round(front_score, 3), "back_score": round(back_score, 3),
-            "note": note,
-        })
-
-    n_face     = count_visible(keypoints, [0, 1, 2], ch)
-    n_face_low = count_visible(keypoints, [0, 1, 2], CONF_LOW)
-    n_ears     = count_visible(keypoints, [3, 4], ch)
-    n_kp_any   = count_visible(keypoints, list(range(17)), CONF_LOW)
-
-    # --- Primary evidence: YOLO face keypoints ---
-    # Only nose and eyes are reliable front-only indicators.
-    # Ears are visible from both front and back, so excluded here.
-    if n_face >= 2:
-        score("yolo_face_kps", df=3.0, note=f"n_face={n_face} >= 2")
-    elif n_face == 1:
-        score("yolo_face_kps", df=1.2, note="n_face=1 (unreliable)")
-    elif n_face_low >= 1:
-        score("yolo_face_kps", df=0.5, note=f"n_face_low={n_face_low} (low conf)")
-    else:
-        score("yolo_face_kps", note="no face kps")
-
-    # Back evidence: only penalise absent face when there are enough keypoints
-    # overall — if the model barely detected anyone, missing face KPs say
-    # nothing about orientation.
-    if n_face_low == 0 and n_kp_any >= 6:
-        score("back_no_face", db=2.5, note=f"no face at any conf, n_kp_any={n_kp_any}")
-    elif n_face == 0 and n_face_low >= 1:
-        score("back_ghost_face", db=1.5, note="ghost low-conf face kps")
-    elif n_face == 1:
-        score("back_stray_kp", db=0.8, note="single stray face kp")
-    else:
-        score("back_face", note="no back evidence from face kps")
-
-    # --- Tertiary evidence: nose between shoulders ---
-    nose       = kp(keypoints, 0, ch)
-    l_shoulder = kp(keypoints, 5, ch)
-    r_shoulder = kp(keypoints, 6, ch)
-
-    if all(p[2] > 0 for p in [nose, l_shoulder, r_shoulder]):
-        s_min = min(l_shoulder[0], r_shoulder[0])
-        s_max = max(l_shoulder[0], r_shoulder[0])
-        if s_min < nose[0] < s_max:
-            score("nose_in_shoulders", df=1.0, note="nose between shoulders")
-        else:
-            # Nose outside shoulder width — unusual for front view
-            score("nose_outside_shoulders", db=0.5, note="nose outside shoulder width")
-    else:
-        score("nose_shoulders", note="nose or shoulders not visible")
-
-    # --- Quaternary evidence: ear visibility ---
-    # Ears visible without any nose/eyes: back-of-head presentation.
-    # Ears visible alongside nose/eyes: corroborates front view.
-    l_ear = kp(keypoints, 3, ch)
-    r_ear = kp(keypoints, 4, ch)
-    ears_visible = (l_ear[2] > 0) + (r_ear[2] > 0)
-
-    if ears_visible >= 1 and n_face == 0:
-        # Ears with no frontal face features → back
-        score("ears", db=1.2 * ears_visible, note=f"ears={ears_visible} without nose/eyes -> back")
-    elif ears_visible >= 1 and n_face >= 2:
-        # Ears alongside nose/eyes → corroborates front
-        score("ears", df=0.3 * ears_visible, note=f"ears={ears_visible} with nose/eyes -> front")
-    else:
-        # ears_visible >= 1 and n_face == 1: no score either way — ambiguous
-        score("ears", note=f"ears_visible={ears_visible}, no strong signal")
-
-    # --- Quinary: shoulder/hip width ratio ---
-    l_hip = kp(keypoints, 11, ch)
-    r_hip = kp(keypoints, 12, ch)
-
-    if (l_shoulder[2] > 0 and r_shoulder[2] > 0 and
-            l_hip[2] > 0 and r_hip[2] > 0):
-        sh_w  = abs(l_shoulder[0] - r_shoulder[0])
-        hip_w = abs(l_hip[0]      - r_hip[0])
-        ratio = sh_w / (hip_w + 1e-6)
-        if ratio > 1.15:
-            score("sh_hip_ratio", df=0.3, note=f"ratio={ratio:.2f} > 1.15")
-        elif 0.85 < ratio < 1.15:
-            score("sh_hip_ratio", db=0.2, note=f"ratio={ratio:.2f} near 1.0")
-        else:
-            score("sh_hip_ratio", note=f"ratio={ratio:.2f}")
-    else:
-        score("sh_hip_ratio", note="hips/shoulders not both visible")
-
-    # --- Decision ---
-    total = front_score + back_score
-    if total < 0.5:
-        orientation = None  # insufficient evidence
-    elif front_score > 2.5 and front_score > back_score:
-        # Absolute score floor: strong positive front evidence overrides a narrow
-        # margin so high-confidence patches don't end up in 'others'.
-        orientation = 'front'
-    else:
-        margin = abs(front_score - back_score) / total
-        # was 0.20 — fewer genuinely-decided patches wasted
-        orientation = None if margin < 0.12 else ('front' if front_score > back_score else 'back')
-
-    metrics = {"n_face": n_face, "n_face_low": n_face_low, "n_ears": n_ears, "n_kp_any": n_kp_any}
-    return orientation, front_score, back_score, metrics, steps
-
-
-def classify_orientation(keypoints, conf_high=None):
-    """
-    Returns 'front', 'back', or None (ambiguous).
-
-    Uses a weighted evidence accumulation approach:
-      - YOLO face keypoints (nose, eyes, ears) are the primary front signal.
-      - Structural geometry (ear/shoulder positioning) provides secondary signal.
-      - Avoids defaulting to front when evidence is genuinely ambiguous.
-
-    Args:
-        conf_high: adaptive confidence threshold (falls back to CONF_HIGH).
-    """
-    ch = conf_high if conf_high is not None else CONF_HIGH
-    orientation, *_ = _classify_orientation_impl(keypoints, ch)
-    return orientation
-
-
-def classify_orientation_debug(keypoints, conf_high=None):
-    """
-    Identical logic to classify_orientation but returns a full score trace dict
-    alongside the decision.  Use for pipeline diagnostics only.
-
-    Returns
-    -------
-    orientation : str | None
-    trace : dict with keys: conf_high, n_face, n_face_low,
-            n_kp_any, front_score, back_score, margin, override_fired,
-            decision, and a list of per-step dicts under 'steps'.
-    """
-    ch = conf_high if conf_high is not None else CONF_HIGH
-    orientation, front_score, back_score, metrics, steps = _classify_orientation_impl(
-        keypoints, ch
-    )
-    total = front_score + back_score
-    trace = {
-        "conf_high": ch,
-        **metrics,
-        "front_score":    round(front_score, 3),
-        "back_score":     round(back_score, 3),
-        "total":          round(total, 3),
-        "margin":         round(abs(front_score - back_score) / total, 3) if total > 0.5 else 0.0,
-        "override_fired": front_score > 2.5 and front_score > back_score,
-        "decision":       orientation,
-        "steps":          steps,
-    }
-    return orientation, trace
-
-
-# ---------------------------------------------------------------------------
-# Top-level classifier
-# ---------------------------------------------------------------------------
-
-def classify_keypoints(keypoints, bbox=None):
+def classify_keypoints(keypoints: np.ndarray, bbox: np.ndarray | None = None) -> str:
     """
     Classify a single set of 17 COCO keypoints (numpy array [17, 3]).
-    Returns one of the five class strings.
-
-    Args:
-        bbox: (x1, y1, x2, y2) bounding box from the pose model;
-              used for the aspect-ratio extent veto.
+    Returns one of the five CLASSES strings.
     """
-    ch = adaptive_conf_high(keypoints)
+    orientation = classify_orientation(keypoints)
+    if orientation is None:
+        return 'others'
 
-    extent = classify_body_extent(keypoints, conf_high=ch, bbox=bbox)
+    extent = classify_extent(keypoints, bbox)
     if extent is None:
         return 'others'
 
-    orientation = classify_orientation(keypoints, conf_high=ch)
-    if orientation is None:
-        return 'others'  # ambiguous — don't guess
-
     return f"{extent}_{orientation}"
-
-
-def classify_patch(pose_model, image_path):
-    """
-    Classify a single image file.
-    Convenience wrapper around batched inference for single-image use.
-
-    Args:
-        pose_model: YOLOv8 pose model instance.
-        image_path: Path to the image file.
-    """
-    results = pose_model(image_path, verbose=False)
-
-    if not results or results[0].keypoints is None:
-        return 'others'
-
-    kp_data = results[0].keypoints.data
-    if kp_data.shape[0] == 0:
-        return 'others'
-
-    # Use the largest bounding box — for cropped patches this is the primary
-    # subject, not a smaller background person with a visible frontal face.
-    boxes    = results[0].boxes.xyxy.cpu().numpy()  # [N, 4]
-    areas    = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-    best_idx = int(np.argmax(areas))
-
-    keypoints = kp_data[best_idx].cpu().numpy()  # [17, 3]
-    bbox      = boxes[best_idx]                   # (x1, y1, x2, y2)
-
-    return classify_keypoints(keypoints, bbox=bbox)
 
 
 # ---------------------------------------------------------------------------
@@ -389,57 +174,48 @@ def classify_patch(pose_model, image_path):
 
 def classify_directory(
     pose_model,
-    input_dir,
-    output_dir,
-    batch_size=32,
-    copy_files=True,
-    save_debug_viz=False,
-):
+    input_dir: str,
+    output_dir: str,
+    batch_size: int = 32,
+    copy_files: bool = True,
+    save_debug_viz: bool = False,
+) -> tuple[dict, dict]:
     """
-    Classify all .jpg/.png files in input_dir using batched inference.
-
-    Batching is the main speedup vs the original single-image loop —
-    on a 2080 Ti, batch_size=32 should keep the GPU well-utilised.
+    Classify all .jpg/.png files in input_dir using batched YOLO inference.
 
     Args:
-        pose_model:     YOLOv8 pose model instance
-        input_dir:      directory of cropped human patches
-        output_dir:     root output directory; per-class subdirs created automatically
-        batch_size:     images per inference call
-        copy_files:     if True, copy (not move) patches into class subdirs
-        save_debug_viz: if True, save YOLO-annotated images to output_dir/debug_viz/
+        pose_model:     YOLOv8 pose model instance.
+        input_dir:      Directory of cropped human patches.
+        output_dir:     Root output directory; per-class subdirs created automatically.
+        batch_size:     Images per inference call.
+        copy_files:     If True, copy patches into per-class subdirs.
+        save_debug_viz: If True, save YOLO-annotated images to output_dir/debug_viz/.
 
     Returns:
-        results: dict mapping filename -> class string
-        summary: dict mapping class string -> count
+        results: dict mapping filename -> class string.
+        summary: dict mapping class string -> count.
     """
     image_paths = sorted(
         glob.glob(os.path.join(input_dir, '*.jpg')) +
         glob.glob(os.path.join(input_dir, '*.png'))
     )
-
     if not image_paths:
         print(f"No images found in {input_dir}")
         return {}, {}
 
-    # Create output class directories
     if copy_files:
         for cls in CLASSES:
             os.makedirs(os.path.join(output_dir, cls), exist_ok=True)
 
-    debug_dir = os.path.join(output_dir, 'debug_viz')
     if save_debug_viz:
-        os.makedirs(debug_dir, exist_ok=True)
+        os.makedirs(os.path.join(output_dir, 'debug_viz'), exist_ok=True)
 
-    results  = {}
-    summary  = {cls: 0 for cls in CLASSES}
+    results = {}
+    summary = {cls: 0 for cls in CLASSES}
+    n_batches = (len(image_paths) + batch_size - 1) // batch_size
 
-    # Process in batches
-    total_batches = (len(image_paths) + batch_size - 1) // batch_size
-    for batch_start in tqdm(range(0, len(image_paths), batch_size), total=total_batches, desc="Pose classification", unit="batch"):
-        batch_paths = image_paths[batch_start: batch_start + batch_size]
-
-        # Run pose estimation on the whole batch in one call
+    for i in tqdm(range(0, len(image_paths), batch_size), total=n_batches, desc="Classifying", unit="batch"):
+        batch_paths   = image_paths[i: i + batch_size]
         batch_results = pose_model(batch_paths, verbose=False)
 
         for img_path, result in zip(batch_paths, batch_results):
@@ -448,47 +224,37 @@ def classify_directory(
             if result.keypoints is None or result.keypoints.data.shape[0] == 0:
                 cls = 'others'
             else:
-                # Pick the largest bounding box — for cropped patches this is the
-                # primary subject, not a smaller background person whose face may
-                # have higher detection confidence.
-                boxes    = result.boxes.xyxy.cpu().numpy()  # [N, 4]
+                boxes    = result.boxes.xyxy.cpu().numpy()
                 areas    = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
                 best_idx = int(np.argmax(areas))
-                keypoints = result.keypoints.data[best_idx].cpu().numpy()
-                bbox      = boxes[best_idx]
-                cls       = classify_keypoints(keypoints, bbox=bbox)
+                cls = classify_keypoints(
+                    result.keypoints.data[best_idx].cpu().numpy(),
+                    bbox=boxes[best_idx],
+                )
 
-            results[fname] = cls
-            summary[cls]  += 1
+            results[fname]  = cls
+            summary[cls]   += 1
 
             if copy_files:
-                dst = os.path.join(output_dir, cls, fname)
-                shutil.copy(img_path, dst)
+                shutil.copy(img_path, os.path.join(output_dir, cls, fname))
 
             if save_debug_viz:
-                annotated = result.plot()  # BGR numpy array with boxes + keypoints
-                cv2.imwrite(os.path.join(debug_dir, fname), annotated)
+                cv2.imwrite(
+                    os.path.join(output_dir, 'debug_viz', fname),
+                    result.plot(),
+                )
 
-    print(f"\nDone. Distribution: { {k: v for k, v in summary.items() if v > 0} }")
+    print(f"\nDone. {dict((k, v) for k, v in summary.items() if v > 0)}")
     return results, summary
 
 
-def reload_classification_results(cls_save_path):
+# ---------------------------------------------------------------------------
+# Reload from existing output directory
+# ---------------------------------------------------------------------------
+
+def reload_classification_results(cls_save_path: str) -> tuple[dict, dict]:
     """
-    Reconstruct ``results`` and ``summary`` from an existing classification
-    directory (the per-class subdirectories written by ``classify_directory``).
-
-    Parameters
-    ----------
-    cls_save_path : str
-        Root classification output directory containing per-class subdirs.
-
-    Returns
-    -------
-    results : dict[str, str]
-        Mapping of filename -> class string.
-    summary : dict[str, int]
-        Mapping of class string -> count.
+    Reconstruct results and summary from an existing classification directory.
     """
     results = {}
     summary = {cls: 0 for cls in CLASSES}
@@ -499,16 +265,10 @@ def reload_classification_results(cls_save_path):
             continue
         for fname in os.listdir(cls_dir):
             if fname.lower().endswith(('.jpg', '.png')):
-                results[fname] = cls
-                summary[cls] += 1
+                results[fname]  = cls
+                summary[cls]   += 1
 
-    summary_path = os.path.join(cls_save_path, "_summary.txt")
-    if os.path.exists(summary_path):
-        with open(summary_path) as f:
-            print(f.read())
-        print(f"Classification summary loaded from {summary_path}")
-    else:
-        total = sum(summary.values())
-        print(f"Reloaded classification results from {cls_save_path}")
-        print(f"  Total: {total}  |  " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
+    total = sum(summary.values())
+    print(f"Loaded {total} patches from {cls_save_path}")
+    print("  " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
     return results, summary
