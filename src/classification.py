@@ -15,14 +15,21 @@ Orientation (applied first):
   front  — nose AND both eyes visible above confidence threshold.
            Requires bilateral facial symmetry; a side profile will typically
            missing one eye and fail this test.
-  back   — none of nose, left_eye, right_eye visible even at low confidence.
-           A side profile produces at least a partial nose detection, so it
-           falls through to 'others' rather than being misclassified as back.
+  back   — nose absent (below BACK_CONF) AND at most one eye visible.
+           Covers two sub-cases:
+             (a) fully turned away — nose and both eyes absent;
+             (b) body facing back but head rotated sideways — nose absent,
+                 one eye partially visible.
+           A true side profile typically produces a nose detection, so it
+           still falls through to 'others'.
   others — anything else (side-on, occluded, ambiguous).
 
 Extent (applied only once orientation is decided):
   full_body     — lower-body keypoints (hips/knees/ankles) visible, corroborated
                   by bounding-box aspect ratio h/w >= 1.5.
+                  For back orientation, both shoulders must also be visible
+                  (enforces that the body is genuinely facing away, not just
+                  partially occluded).
   head_shoulder — shoulders or upper-body keypoints visible, lower-body absent.
   others        — insufficient keypoints to determine extent.
 
@@ -89,10 +96,17 @@ def classify_orientation(keypoints: np.ndarray) -> str | None:
     Returns 'front', 'back', or None (side-on / ambiguous → 'others').
 
     front: nose AND both eyes above FACE_CONF.
-    back:  all of nose, left_eye, right_eye below BACK_CONF.
-    None:  partial face visibility — side profile or occluded.
+    back:  either
+             (a) all of nose, left_eye, right_eye below BACK_CONF — body fully
+                 turned away; or
+             (b) nose below BACK_CONF AND at most one eye above BACK_CONF —
+                 body facing back but head turned sideways.
+           In case (b) the nose is absent (facing away) while one eye becomes
+           partially visible due to the head rotation; this is distinct from a
+           true side profile, which typically produces a nose detection.
+    None:  anything else — side-on, occluded, or ambiguous.
     """
-    nose_conf    = keypoints[0, 2]
+    nose_conf      = keypoints[0, 2]
     left_eye_conf  = keypoints[1, 2]
     right_eye_conf = keypoints[2, 2]
 
@@ -101,15 +115,16 @@ def classify_orientation(keypoints: np.ndarray) -> str | None:
         left_eye_conf  >= FACE_CONF and
         right_eye_conf >= FACE_CONF
     )
-    all_face_absent = (
-        nose_conf      < BACK_CONF and
-        left_eye_conf  < BACK_CONF and
-        right_eye_conf < BACK_CONF
-    )
+
+    nose_absent    = nose_conf < BACK_CONF
+    n_eyes_visible = sum(1 for c in (left_eye_conf, right_eye_conf) if c >= BACK_CONF)
+    # 'back' if nose is absent and at most one eye is visible (covers both
+    # fully-turned-away and head-turned-sideways cases).
+    is_back = nose_absent and n_eyes_visible <= 1
 
     if all_face_present:
         return 'front'
-    if all_face_absent:
+    if is_back:
         return 'back'
     return None  # partial — side-on or ambiguous
 
@@ -156,6 +171,10 @@ def classify_keypoints(keypoints: np.ndarray, bbox: np.ndarray | None = None) ->
     """
     Classify a single set of 17 COCO keypoints (numpy array [17, 3]).
     Returns one of the five CLASSES strings.
+
+    For back orientation, full_body_back additionally requires both shoulders
+    to be visible — ensuring the torso is genuinely facing away rather than
+    partially occluded or the result of a noisy low-confidence back detection.
     """
     orientation = classify_orientation(keypoints)
     if orientation is None:
@@ -164,6 +183,14 @@ def classify_keypoints(keypoints: np.ndarray, bbox: np.ndarray | None = None) ->
     extent = classify_extent(keypoints, bbox)
     if extent is None:
         return 'others'
+
+    # Extra guard for back full-body: both shoulders must be visible.
+    # A partial-back detection with only one shoulder is too ambiguous to
+    # commit to full_body_back; fall back to head_shoulder_back instead.
+    if orientation == 'back' and extent == 'full_body':
+        n_shoulders = n_visible(keypoints, UPPER_KPS, BODY_CONF)
+        if n_shoulders < 2:
+            extent = 'head_shoulder'
 
     return f"{extent}_{orientation}"
 

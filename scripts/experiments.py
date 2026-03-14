@@ -46,9 +46,9 @@ print(f"Using device: {DEVICE}")
 
 # %%
 # ── Change these three variables to inspect a different patch ───────────────
-DIAG_RUN   = "20260225-104100"
-DIAG_CLASS = "full_body_front"
-DIAG_IMAGE = "human_0000_TheIrishman_f009288_conf0.92_score0.92"
+DIAG_RUN   = "20260314-195748-1"
+DIAG_CLASS = "others"
+DIAG_IMAGE = "human_0002_TheGodfather_f001504_conf0.92_score0.86"
 
 # %%
 # Classification viewer — paste a relative path to a classified patch and see
@@ -59,6 +59,7 @@ DIAG_IMAGE = "human_0000_TheIrishman_f009288_conf0.92_score0.92"
 
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import matplotlib.patches as mpatches
 
 def show_patch_debug(rel_path: str, root: str = PROJECT_ROOT) -> None:
     """Display a classified patch and its debug_viz counterpart side by side.
@@ -111,11 +112,10 @@ show_patch_debug(view_path)
 # ── Deep classification diagnostic ──────────────────────────────────────────
 # Runs the full pipeline on a single patch and annotates every step:
 #   col 1 — original patch with ALL YOLO pose detections (primary = red box)
-#   col 2 — primary bbox crop sent to MediaPipe for face detection
+#   col 2 — primary bbox crop selected for classification
 #   col 3 — keypoint confidence heatmap for the primary detection
-#   col 4 — score trace table (front / back contributions per rule)
+#   col 4 — rule-by-rule decision trace (pose-only pipeline)
 
-import importlib
 import src.classification as _clf_mod
 
 COCO_KP_NAMES = [
@@ -129,19 +129,19 @@ COCO_KP_NAMES = [
 DIAG_PATH = os.path.join(PROJECT_ROOT, "output", "classifications", DIAG_RUN, DIAG_CLASS, DIAG_IMAGE + ".jpg")
 
 # --- load models if not in scope ---
-if "pose_model" not in dir():
+if "pose_model" not in globals():
     _pose_model = YOLO(os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"))
     _pose_model.to(DEVICE)
 else:
-    _pose_model = pose_model  # noqa: F821
-
-# Build face detector using Tasks API (auto-downloads model if needed)
-importlib.reload(_clf_mod)
-_face_detector = _clf_mod.build_face_detector()
+    _pose_model = globals()["pose_model"]
 
 # --- run YOLO ---
 _result  = _pose_model(DIAG_PATH, verbose=False)[0]
 _img_bgr = cv2.imread(DIAG_PATH)
+if _img_bgr is None:
+    raise FileNotFoundError(f"Could not read image: {DIAG_PATH}")
+if _result.keypoints is None or _result.keypoints.data.shape[0] == 0:
+    raise RuntimeError(f"No YOLO pose detections found for: {DIAG_PATH}")
 _img_rgb = cv2.cvtColor(_img_bgr, cv2.COLOR_BGR2RGB)
 _h, _w   = _img_rgb.shape[:2]
 
@@ -152,17 +152,67 @@ _areas   = (_boxes[:, 2] - _boxes[:, 0]) * (_boxes[:, 3] - _boxes[:, 1])
 _primary = int(np.argmax(_areas))
 _kps     = _kp_data[_primary]                       # [17, 3]
 _bbox    = _boxes[_primary]
-_ch      = _clf_mod.adaptive_conf_high(_kps)
 
-# --- primary crop for MediaPipe (scoped to YOLO bbox) ---
+# --- primary crop (scoped to YOLO bbox) ---
 _x1, _y1, _x2, _y2 = [int(v) for v in _bbox]
 _x1c, _y1c = max(0, _x1), max(0, _y1)
 _x2c, _y2c = min(_w, _x2), min(_h, _y2)
 _crop_rgb  = _img_rgb[_y1c:_y2c, _x1c:_x2c]
-_face_det  = _clf_mod._run_face_detection(_face_detector, DIAG_PATH, _bbox)
 
-# --- score trace ---
-_, _trace = _clf_mod.classify_orientation_debug(_kps, conf_high=_ch, face_detected=_face_det)
+# --- pose-only decision trace ---
+_orientation = _clf_mod.classify_orientation(_kps)
+_extent = _clf_mod.classify_extent(_kps, _bbox)
+_final_cls = _clf_mod.classify_keypoints(_kps, _bbox)
+
+_nose = _kps[0, 2]
+_l_eye = _kps[1, 2]
+_r_eye = _kps[2, 2]
+
+_n_lower = _clf_mod.n_visible(_kps, _clf_mod.LOWER_KPS, _clf_mod.BODY_CONF)
+_n_ankles = _clf_mod.n_visible(_kps, _clf_mod.ANKLE_KPS, _clf_mod.BODY_CONF)
+_n_shoulders = _clf_mod.n_visible(_kps, _clf_mod.UPPER_KPS, _clf_mod.BODY_CONF)
+_h_box = _bbox[3] - _bbox[1]
+_w_box = (_bbox[2] - _bbox[0]) + 1e-6
+_aspect = _h_box / _w_box
+
+_front_pass = (_nose >= _clf_mod.FACE_CONF and _l_eye >= _clf_mod.FACE_CONF and _r_eye >= _clf_mod.FACE_CONF)
+_back_pass = (_nose < _clf_mod.BACK_CONF and _l_eye < _clf_mod.BACK_CONF and _r_eye < _clf_mod.BACK_CONF)
+_has_lower = (_n_ankles >= 1) or (_n_lower >= 3)
+_aspect_pass = _aspect >= 1.5
+_has_shoulder = _n_shoulders >= 1
+
+_trace_rows = [
+    [
+        "Front check",
+        f"nose={_nose:.2f} eyeL={_l_eye:.2f} eyeR={_r_eye:.2f}",
+        f">= FACE_CONF({_clf_mod.FACE_CONF:.2f})",
+        "PASS" if _front_pass else "FAIL",
+    ],
+    [
+        "Back check",
+        f"nose={_nose:.2f} eyeL={_l_eye:.2f} eyeR={_r_eye:.2f}",
+        f"< BACK_CONF({_clf_mod.BACK_CONF:.2f})",
+        "PASS" if _back_pass else "FAIL",
+    ],
+    [
+        "Lower-body evidence",
+        f"lower={_n_lower} ankles={_n_ankles}",
+        "ankles>=1 OR lower>=3",
+        "PASS" if _has_lower else "FAIL",
+    ],
+    [
+        "Aspect ratio",
+        f"h/w={_aspect:.2f}",
+        ">= 1.5 for full_body",
+        "PASS" if _aspect_pass else "FAIL",
+    ],
+    [
+        "Shoulder evidence",
+        f"visible_shoulders={_n_shoulders}",
+        f">=1 @ BODY_CONF({_clf_mod.BODY_CONF:.2f})",
+        "PASS" if _has_shoulder else "FAIL",
+    ],
+]
 
 # --- keypoint confidence bar colours ---
 _kp_confs = _kps[:, 2]
@@ -178,18 +228,18 @@ for i, (box, area) in enumerate(zip(_boxes, _areas)):
     bx1, by1, bx2, by2 = box
     color = "red" if i == _primary else "dodgerblue"
     lw    = 2.5  if i == _primary else 1.2
-    rect  = plt.Rectangle((bx1, by1), bx2 - bx1, by2 - by1,
-                           linewidth=lw, edgecolor=color, facecolor="none")
+    rect  = mpatches.Rectangle((bx1, by1), bx2 - bx1, by2 - by1,
+                               linewidth=lw, edgecolor=color, facecolor="none")
     ax1.add_patch(rect)
     ax1.text(bx1, by1 - 4, f"#{i} area={int(area)}", color=color, fontsize=7)
 for ki, (kx, ky, kc) in enumerate(_kps):
-    if kc >= _clf_mod.CONF_LOW:
-        c = "lime" if kc >= _ch else "yellow"
+    if kc >= _clf_mod.BACK_CONF:
+        c = "lime" if kc >= _clf_mod.FACE_CONF else "gold"
         ax1.plot(kx, ky, "o", color=c, markersize=4)
         ax1.text(kx + 2, ky, COCO_KP_NAMES[ki], color=c, fontsize=5)
 ax1.set_title(
     f"All detections ({len(_boxes)} found)\n"
-    f"Red=primary  Green kp >= conf_high={_ch:.2f}  Yellow=low-conf",
+    f"Red=primary  Green kp >= FACE_CONF={_clf_mod.FACE_CONF:.2f}  Gold>=BACK_CONF",
     fontsize=8,
 )
 ax1.axis("off")
@@ -198,21 +248,22 @@ ax1.axis("off")
 ax2 = fig.add_subplot(gs[1])
 ax2.imshow(_crop_rgb)
 ax2.set_title(
-    f"Primary bbox crop\nMediaPipe face: {'YES' if _face_det else 'NO'}",
+    f"Primary bbox crop\norientation={_orientation}  extent={_extent}",
     fontsize=8,
-    color="green" if _face_det else "red",
+    color="green" if _final_cls != "others" else "orange",
 )
 ax2.axis("off")
 
 # Panel 3: per-keypoint confidence bars
 ax3 = fig.add_subplot(gs[2])
 bar_colors = [
-    "tomato" if c < _clf_mod.CONF_LOW else ("gold" if c < _ch else "limegreen")
+    "tomato" if c < _clf_mod.BACK_CONF else ("gold" if c < _clf_mod.FACE_CONF else "limegreen")
     for c in _kp_confs
 ]
 ax3.barh(range(17), _kp_confs, color=bar_colors)
-ax3.axvline(_ch, color="limegreen", linestyle="--", linewidth=1, label=f"conf_high={_ch:.2f}")
-ax3.axvline(_clf_mod.CONF_LOW, color="gold", linestyle=":", linewidth=1, label=f"conf_low={_clf_mod.CONF_LOW:.2f}")
+ax3.axvline(_clf_mod.BACK_CONF, color="gold", linestyle=":", linewidth=1, label=f"back_conf={_clf_mod.BACK_CONF:.2f}")
+ax3.axvline(_clf_mod.BODY_CONF, color="dodgerblue", linestyle="-.", linewidth=1, label=f"body_conf={_clf_mod.BODY_CONF:.2f}")
+ax3.axvline(_clf_mod.FACE_CONF, color="limegreen", linestyle="--", linewidth=1, label=f"face_conf={_clf_mod.FACE_CONF:.2f}")
 ax3.set_yticks(range(17))
 ax3.set_yticklabels(COCO_KP_NAMES, fontsize=7)
 ax3.set_xlim(0, 1)
@@ -224,34 +275,21 @@ ax3.legend(fontsize=6, loc="lower right")
 # Panel 4: score trace table
 ax4 = fig.add_subplot(gs[3])
 ax4.axis("off")
-col_labels = ["Rule", "Dfront", "Dback", "front", "back", "Note"]
-rows = []
-for s in _trace["steps"]:
-    rows.append([
-        s["label"],
-        f"{s['delta_front']:+.1f}" if s["delta_front"] else "-",
-        f"{s['delta_back']:+.1f}"  if s["delta_back"]  else "-",
-        f"{s['front_score']:.2f}",
-        f"{s['back_score']:.2f}",
-        s["note"][:32],
-    ])
-tbl = ax4.table(cellText=rows, colLabels=col_labels, cellLoc="center", loc="center")
+col_labels = ["Rule", "Measured", "Threshold", "Result"]
+tbl = ax4.table(cellText=_trace_rows, colLabels=col_labels, cellLoc="center", loc="center")
 tbl.auto_set_font_size(False)
 tbl.set_fontsize(7)
 tbl.auto_set_column_width(range(len(col_labels)))
-verdict_color = "green" if _trace["decision"] == "back" else ("red" if _trace["decision"] == "front" else "orange")
+verdict_color = "green" if _final_cls != "others" else "orange"
 ax4.set_title(
-    f"Score trace  front={_trace['front_score']}  back={_trace['back_score']}\n"
-    f"override_fired={_trace['override_fired']}  margin={_trace['margin']:.2f}\n"
-    f"Decision: {_trace['decision']}",
+    f"Decision trace (pose-only)\n"
+    f"orientation={_orientation}  extent={_extent}\n"
+    f"Final class: {_final_cls}",
     fontsize=8, color=verdict_color,
 )
 
 plt.suptitle(os.path.basename(DIAG_PATH), fontsize=9, y=1.01)
-plt.savefig(os.path.join(PROJECT_ROOT, "output", "diag_classification.png"),
-            dpi=150, bbox_inches="tight")
 plt.show()
-print(f"Saved to output/diag_classification.png")
 
 # %%
 
