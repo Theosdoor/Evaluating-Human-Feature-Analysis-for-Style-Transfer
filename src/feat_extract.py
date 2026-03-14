@@ -103,7 +103,6 @@ def extract_humans_from_video(
     blur_threshold_film=40.0,
     blur_threshold_game=100.0,
     yolo_batch_size=8,
-    on_batch=None,
 ):
     """
     Extract human detections from a video file.
@@ -111,8 +110,7 @@ def extract_humans_from_video(
     GPU speedup — batched YOLO calls:
       Instead of running model(frame) once per frame, eligible frames are
       buffered until `yolo_batch_size` are ready, then dispatched as one
-      model(batch) call.  This keeps the 2080 Ti feed efficiently without
-      holding many frames in RAM simultaneously.
+      model(batch) call.
 
     Uses two-stage frame filtering:
       1. Skip frames where inter-frame difference is below scene_change_threshold
@@ -120,10 +118,6 @@ def extract_humans_from_video(
 
     Blur is scored inline per-patch so we don't need to store full frames.
     Film footage threshold is lower than game footage (inferred from filename).
-
-    on_batch: optional callable(new_detections) fired after each YOLO batch
-      flush.  Use this for incremental saving so results appear on disk during
-      extraction rather than only after the full video scan completes.
 
     Returns a list of detection dicts (no raw frame data stored).
     """
@@ -155,8 +149,6 @@ def extract_humans_from_video(
         detections.extend(new_dets)
         frame_buf.clear()
         meta_buf.clear()
-        if on_batch and new_dets:
-            on_batch(new_dets)
 
     progress_total = total_frames if total_frames > 0 else None
     with tqdm(total=progress_total, desc=f"Extracting {os.path.basename(video_path)}", unit="frame") as pbar:
@@ -423,21 +415,20 @@ def save_extraction_summary(extract_save_path, detections, selected_detections):
             lines.append(f"  mean: {sum(blur_vals)/len(blur_vals):.1f}")
 
     elif len(selected_detections) > 0:
-        lines.append("(Extraction skipped; stats from reloaded patch filenames)")
-        lines.append(f"Reloaded patches: {len(selected_detections)}")
+        # Reload mode — preserve the existing summary file rather than overwriting it.
+        summary_path = os.path.join(extract_save_path, "_summary.txt")
+        if os.path.exists(summary_path):
+            with open(summary_path) as f:
+                print(f.read())
+            print(f"Extraction summary loaded from {summary_path}")
+            return summary_path
 
+        lines.append(f"Reloaded patches: {len(selected_detections)}")
         selected_counts = Counter(os.path.basename(d['video_path']) for d in selected_detections)
         lines.append(f"\n{'Video':<30} {'Patches':>8}")
         lines.append("-" * 40)
         for src, count in selected_counts.most_common():
             lines.append(f"{src:<30} {count:>8}")
-
-        score_vals = [d['score'] for d in selected_detections]
-        if score_vals:
-            lines.append(f"\nScore stats (selected patches):")
-            lines.append(f"  min:  {min(score_vals):.3f}")
-            lines.append(f"  max:  {max(score_vals):.3f}")
-            lines.append(f"  mean: {sum(score_vals)/len(score_vals):.3f}")
 
     else:
         lines.append("(No extraction data available)")

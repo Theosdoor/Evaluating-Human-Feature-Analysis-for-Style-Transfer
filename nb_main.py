@@ -53,7 +53,7 @@ SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
 # Leave as None to run the full pipeline from scratch.
 # e.g. RELOAD_RUN = "20260224-224712"
 RELOAD_RUN = None
-RELOAD_RUN = "20260225-104100"
+# RELOAD_RUN = "20260225-104100"
 
 # Set True to re-run classification even when RELOAD_RUN is set.
 RECLASSIFY = True # need RELOAD_RUN != None to use this
@@ -65,17 +65,23 @@ print(f"Using device: {DEVICE}")
 # 1.1. Human Patch Extraction
 extract_save_path = os.path.join(SAVE_DIR, "extracted_humans", RELOAD_RUN if RELOAD_RUN else SAVE_NAME)
 n2save = 4000
-detection_b_size = 32  # 2080 Ti (11 GB VRAM) comfortably handles 32 frames/batch
+
+# extraction params
+detection_b_size = 32
+yolo_interval=10
+scene_change_threshold=8.0
+blur_threshold_film=40.0
+blur_threshold_game=100.0
+
+
 
 detections = []         # all raw detections (for diagnostics)
 selected_detections = []
 
 if RELOAD_RUN:
-    # %%
     # Reload existing extracted patches
     selected_detections = reload_extracted_patches(extract_save_path, TRAIN_PATHS)
 else:
-    # %%
     model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
     model.to(DEVICE)
 
@@ -93,7 +99,13 @@ else:
     targets[-1] += n2save - sum(targets)  # absorb rounding remainder
 
     for path, target in tqdm(zip(TRAIN_PATHS, targets), desc="Processing training videos", unit="video", total=len(TRAIN_PATHS)):
-        video_dets = extract_humans_from_video(model, path, yolo_batch_size=detection_b_size)
+        video_dets = extract_humans_from_video(model, path, 
+                                                yolo_batch_size=detection_b_size,
+                                                yolo_interval=yolo_interval,
+                                                scene_change_threshold=scene_change_threshold,
+                                                blur_threshold_film=blur_threshold_film,
+                                                blur_threshold_game=blur_threshold_game
+                                               )
 
         for det in video_dets:
             det['score'] = score_detection(det)
@@ -129,11 +141,6 @@ else:
     pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
     pose_model.to(DEVICE)
 
-    face_detector = build_face_detector(
-        model_path=os.path.join(PROJECT_ROOT, 'models/blaze_face_short_range.tflite')
-    )
-    print(face_detector)
-
     results, summary = classify_directory(
         pose_model,
         input_dir=cls_input_path,
@@ -141,9 +148,7 @@ else:
         batch_size=classify_b_size,
         copy_files=True,       # copy files to classifications dir for easy reference
         save_debug_viz=True,   # set True to save YOLO-annotated images to debug_viz/
-        face_detector=face_detector,
     )
-    face_detector.close()  # release MediaPipe resources before GC to avoid __del__ crash
 
     print(summary)
 

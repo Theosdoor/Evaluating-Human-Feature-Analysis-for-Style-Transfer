@@ -1,7 +1,7 @@
 downloaded_data
 models
 output
-slurm/
+submit_job.sh
 
 *.err
 wandb/

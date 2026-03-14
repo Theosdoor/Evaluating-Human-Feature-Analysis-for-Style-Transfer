@@ -1,6 +1,6 @@
-# ACV Coursework — Copilot Instructions
+# AGENTS.md
 
-**Always load the `python` skill before writing or planning Python code in this repo.**
+Always load the `python` skill before **writing** Python code in this repo.
 
 ## Project Goal
 Deep learning solution to enhance visual quality of humans in game videos using movie footage as reference. Unpaired image-to-image translation (CycleGAN) applied locally to human patches extracted via YOLO detection + pose classification.

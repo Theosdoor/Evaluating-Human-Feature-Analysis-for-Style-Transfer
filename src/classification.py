@@ -26,23 +26,9 @@ import glob
 import shutil
 from pathlib import Path
 
-import urllib.request
-
 import cv2
-import mediapipe as mp
 import numpy as np
 from tqdm import tqdm
-
-_FACE_MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/"
-    "face_detector/blaze_face_short_range/float16/1/"
-    "blaze_face_short_range.tflite"
-)
-_FACE_MODEL_DEFAULT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "models",
-    "blaze_face_short_range.tflite",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -76,89 +62,6 @@ def adaptive_conf_high(keypoints):
     """
     median_conf = float(np.median(keypoints[:, 2]))
     return float(np.clip(median_conf - 0.1, 0.15, 0.30))
-
-
-# ---------------------------------------------------------------------------
-# MediaPipe face detection helper
-# ---------------------------------------------------------------------------
-
-def build_face_detector(min_confidence=0.5, model_path=None):
-    """
-    Return a MediaPipe FaceDetector (Tasks API, mediapipe >= 0.10).
-
-    The blaze_face_short_range.tflite model is auto-downloaded to models/
-    if not already present.  Returns None on any failure so the pipeline
-    degrades gracefully.
-
-    Args:
-        min_confidence: minimum detection confidence threshold.
-        model_path:     explicit path to the .tflite model; defaults to
-                        models/blaze_face_short_range.tflite.
-    """
-    model_path = model_path or _FACE_MODEL_DEFAULT
-
-    if not os.path.exists(model_path):
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        print(f"[classification] Downloading face detector model -> {model_path}")
-        try:
-            urllib.request.urlretrieve(_FACE_MODEL_URL, model_path)
-        except Exception as e:
-            print(f"[classification] Download failed: {e}. Face detection disabled.")
-            return None
-
-    try:
-        BaseOptions         = mp.tasks.BaseOptions
-        FaceDetector        = mp.tasks.vision.FaceDetector
-        FaceDetectorOptions = mp.tasks.vision.FaceDetectorOptions
-        VisionRunningMode   = mp.tasks.vision.RunningMode
-
-        options = FaceDetectorOptions(
-            base_options=BaseOptions(model_asset_path=model_path),
-            running_mode=VisionRunningMode.IMAGE,
-            min_detection_confidence=min_confidence,
-        )
-        return FaceDetector.create_from_options(options)
-    except Exception as e:
-        print(f"[classification] Could not build face detector: {e}")
-        return None
-
-
-def _run_face_detection(face_detector, image_path, bbox=None):
-    """
-    Return True if the MediaPipe face detector fires on the given image.
-
-    Args:
-        face_detector: MediaPipe FaceDetector (Tasks API) instance, or None.
-        image_path:    Path to the patch image.
-        bbox:          Optional (x1, y1, x2, y2) in pixel coords of the primary
-                       YOLO detection.  When provided, MediaPipe only sees that
-                       crop — background figures outside the bbox are ignored,
-                       preventing their faces from biasing the front/back decision.
-
-    Silently returns False if image loading fails or face_detector is None.
-    """
-    if face_detector is None:
-        return False
-    img_bgr = cv2.imread(str(image_path))
-    if img_bgr is None:
-        return False
-
-    if bbox is not None:
-        h, w = img_bgr.shape[:2]
-        x1 = max(0, int(bbox[0]))
-        y1 = max(0, int(bbox[1]))
-        x2 = min(w, int(bbox[2]))
-        y2 = min(h, int(bbox[3]))
-        if x2 > x1 and y2 > y1:
-            img_bgr = img_bgr[y1:y2, x1:x2]
-
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    try:
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
-        result   = face_detector.detect(mp_image)
-        return bool(result.detections)
-    except Exception:
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +154,7 @@ def classify_body_extent(keypoints, conf_high=None, bbox=None):
 # Front / back classification
 # ---------------------------------------------------------------------------
 
-def _classify_orientation_impl(keypoints, ch, face_detected):
+def _classify_orientation_impl(keypoints, ch):
     """
     Core scoring engine shared by classify_orientation and classify_orientation_debug.
 
@@ -284,18 +187,7 @@ def _classify_orientation_impl(keypoints, ch, face_detected):
     n_ears     = count_visible(keypoints, [3, 4], ch)
     n_kp_any   = count_visible(keypoints, list(range(17)), CONF_LOW)
 
-    # --- Primary evidence: dedicated face detector ---
-    # Full bonus only when YOLO also sees face keypoints on the primary subject.
-    # If the detector fired but YOLO sees nothing, a background face within the
-    # bbox is the likely cause.
-    if face_detected and n_face >= 1:
-        score("face_detector", df=3.0, note="MediaPipe fired + YOLO face kps")
-    elif face_detected:
-        score("face_detector", df=1.0, note="MediaPipe fired, no YOLO face kps")
-    else:
-        score("face_detector", note="MediaPipe not used / no face")
-
-    # --- Secondary evidence: YOLO face keypoints ---
+    # --- Primary evidence: YOLO face keypoints ---
     # Only nose and eyes are reliable front-only indicators.
     # Ears are visible from both front and back, so excluded here.
     if n_face >= 2:
@@ -376,7 +268,7 @@ def _classify_orientation_impl(keypoints, ch, face_detected):
         orientation = None  # insufficient evidence
     elif front_score > 2.5 and front_score > back_score:
         # Absolute score floor: strong positive front evidence overrides a narrow
-        # margin so patches with e.g. face_detected=True don't end up in 'others'.
+        # margin so high-confidence patches don't end up in 'others'.
         orientation = 'front'
     else:
         margin = abs(front_score - back_score) / total
@@ -387,26 +279,24 @@ def _classify_orientation_impl(keypoints, ch, face_detected):
     return orientation, front_score, back_score, metrics, steps
 
 
-def classify_orientation(keypoints, conf_high=None, face_detected=False):
+def classify_orientation(keypoints, conf_high=None):
     """
     Returns 'front', 'back', or None (ambiguous).
 
     Uses a weighted evidence accumulation approach:
-      - MediaPipe face detection (independent of YOLO) is the strongest signal.
-      - YOLO face keypoints (nose, eyes, ears) add corroborating front evidence.
+      - YOLO face keypoints (nose, eyes, ears) are the primary front signal.
       - Structural geometry (ear/shoulder positioning) provides secondary signal.
       - Avoids defaulting to front when evidence is genuinely ambiguous.
 
     Args:
-        conf_high:     adaptive confidence threshold (falls back to CONF_HIGH).
-        face_detected: True if a dedicated face detector fired on this patch.
+        conf_high: adaptive confidence threshold (falls back to CONF_HIGH).
     """
     ch = conf_high if conf_high is not None else CONF_HIGH
-    orientation, *_ = _classify_orientation_impl(keypoints, ch, face_detected)
+    orientation, *_ = _classify_orientation_impl(keypoints, ch)
     return orientation
 
 
-def classify_orientation_debug(keypoints, conf_high=None, face_detected=False):
+def classify_orientation_debug(keypoints, conf_high=None):
     """
     Identical logic to classify_orientation but returns a full score trace dict
     alongside the decision.  Use for pipeline diagnostics only.
@@ -414,18 +304,17 @@ def classify_orientation_debug(keypoints, conf_high=None, face_detected=False):
     Returns
     -------
     orientation : str | None
-    trace : dict with keys: conf_high, face_detected, n_face, n_face_low,
+    trace : dict with keys: conf_high, n_face, n_face_low,
             n_kp_any, front_score, back_score, margin, override_fired,
             decision, and a list of per-step dicts under 'steps'.
     """
     ch = conf_high if conf_high is not None else CONF_HIGH
     orientation, front_score, back_score, metrics, steps = _classify_orientation_impl(
-        keypoints, ch, face_detected
+        keypoints, ch
     )
     total = front_score + back_score
     trace = {
         "conf_high": ch,
-        "face_detected": face_detected,
         **metrics,
         "front_score":    round(front_score, 3),
         "back_score":     round(back_score, 3),
@@ -442,15 +331,14 @@ def classify_orientation_debug(keypoints, conf_high=None, face_detected=False):
 # Top-level classifier
 # ---------------------------------------------------------------------------
 
-def classify_keypoints(keypoints, face_detected=False, bbox=None):
+def classify_keypoints(keypoints, bbox=None):
     """
     Classify a single set of 17 COCO keypoints (numpy array [17, 3]).
     Returns one of the five class strings.
 
     Args:
-        face_detected: True if a dedicated face detector fired on this patch.
-        bbox:          (x1, y1, x2, y2) bounding box from the pose model;
-                       used for the aspect-ratio extent veto.
+        bbox: (x1, y1, x2, y2) bounding box from the pose model;
+              used for the aspect-ratio extent veto.
     """
     ch = adaptive_conf_high(keypoints)
 
@@ -458,25 +346,21 @@ def classify_keypoints(keypoints, face_detected=False, bbox=None):
     if extent is None:
         return 'others'
 
-    orientation = classify_orientation(keypoints, conf_high=ch, face_detected=face_detected)
+    orientation = classify_orientation(keypoints, conf_high=ch)
     if orientation is None:
         return 'others'  # ambiguous — don't guess
 
     return f"{extent}_{orientation}"
 
 
-def classify_patch(pose_model, image_path, face_detector=None):
+def classify_patch(pose_model, image_path):
     """
     Classify a single image file.
     Convenience wrapper around batched inference for single-image use.
 
     Args:
-        pose_model:     YOLOv8 pose model instance.
-        image_path:     Path to the image file.
-        face_detector:  Optional MediaPipe FaceDetection instance (from
-                        build_face_detector()).  When provided, used as a
-                        parallel front-orientation signal that is independent
-                        of YOLO pose keypoint confidence.
+        pose_model: YOLOv8 pose model instance.
+        image_path: Path to the image file.
     """
     results = pose_model(image_path, verbose=False)
 
@@ -493,11 +377,10 @@ def classify_patch(pose_model, image_path, face_detector=None):
     areas    = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
     best_idx = int(np.argmax(areas))
 
-    keypoints     = kp_data[best_idx].cpu().numpy()  # [17, 3]
-    bbox          = boxes[best_idx]                   # (x1, y1, x2, y2)
-    face_detected = _run_face_detection(face_detector, image_path, bbox=bbox)
+    keypoints = kp_data[best_idx].cpu().numpy()  # [17, 3]
+    bbox      = boxes[best_idx]                   # (x1, y1, x2, y2)
 
-    return classify_keypoints(keypoints, face_detected=face_detected, bbox=bbox)
+    return classify_keypoints(keypoints, bbox=bbox)
 
 
 # ---------------------------------------------------------------------------
@@ -511,26 +394,20 @@ def classify_directory(
     batch_size=32,
     copy_files=True,
     save_debug_viz=False,
-    face_detector=None,
 ):
     """
     Classify all .jpg/.png files in input_dir using batched inference.
 
     Batching is the main speedup vs the original single-image loop —
     on a 2080 Ti, batch_size=32 should keep the GPU well-utilised.
-    MediaPipe face detection (if face_detector is provided) is run per-image
-    outside the YOLO batch; it is fast enough (~3 ms/image) not to be a
-    bottleneck.
 
     Args:
-        pose_model:      YOLOv8 pose model instance
-        input_dir:       directory of cropped human patches
-        output_dir:      root output directory; per-class subdirs created automatically
-        batch_size:      images per inference call
-        copy_files:      if True, copy (not move) patches into class subdirs
-        save_debug_viz:  if True, save YOLO-annotated images to output_dir/debug_viz/
-        face_detector:   optional MediaPipe FaceDetection instance (from
-                         build_face_detector()); improves front/back accuracy
+        pose_model:     YOLOv8 pose model instance
+        input_dir:      directory of cropped human patches
+        output_dir:     root output directory; per-class subdirs created automatically
+        batch_size:     images per inference call
+        copy_files:     if True, copy (not move) patches into class subdirs
+        save_debug_viz: if True, save YOLO-annotated images to output_dir/debug_viz/
 
     Returns:
         results: dict mapping filename -> class string
@@ -577,14 +454,9 @@ def classify_directory(
                 boxes    = result.boxes.xyxy.cpu().numpy()  # [N, 4]
                 areas    = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
                 best_idx = int(np.argmax(areas))
-                keypoints         = result.keypoints.data[best_idx].cpu().numpy()
-                bbox              = boxes[best_idx]
-                face_det_result   = _run_face_detection(face_detector, img_path, bbox=bbox)
-                cls               = classify_keypoints(
-                    keypoints,
-                    face_detected=face_det_result,
-                    bbox=bbox,
-                )
+                keypoints = result.keypoints.data[best_idx].cpu().numpy()
+                bbox      = boxes[best_idx]
+                cls       = classify_keypoints(keypoints, bbox=bbox)
 
             results[fname] = cls
             summary[cls]  += 1
@@ -630,7 +502,13 @@ def reload_classification_results(cls_save_path):
                 results[fname] = cls
                 summary[cls] += 1
 
-    total = sum(summary.values())
-    print(f"Reloaded classification results from {cls_save_path}")
-    print(f"  Total: {total}  |  " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
+    summary_path = os.path.join(cls_save_path, "_summary.txt")
+    if os.path.exists(summary_path):
+        with open(summary_path) as f:
+            print(f.read())
+        print(f"Classification summary loaded from {summary_path}")
+    else:
+        total = sum(summary.values())
+        print(f"Reloaded classification results from {cls_save_path}")
+        print(f"  Total: {total}  |  " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
     return results, summary
