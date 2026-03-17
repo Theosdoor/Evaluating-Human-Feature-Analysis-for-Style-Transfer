@@ -1,16 +1,5 @@
 # Implementation Plan — Full Pipeline
 
-## Current State
-
-| Stage | Status | Key files |
-|---|---|---|
-| 1.1 — Patch Extraction | ✅ Done | `src/feat_extract.py`, `nb_main.py` |
-| 1.2 — Classification | ✅ Done | `src/classification.py`|
-| 1.3 — Training Data Selection | 🔲 Not started | `src/data_selection.py` (new) |
-| 2.1 — Image Model Deployment | 🔲 Not started | `src/style_transfer.py` (new) |
-| 2.2 — Local Temporal Enhancement | 🔲 Not started | `src/video_pipeline.py` (new) |
-
----
 
 ## 1.3 — Training Data Selection (15%)
 
