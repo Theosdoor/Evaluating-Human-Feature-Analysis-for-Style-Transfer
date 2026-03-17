@@ -10,18 +10,25 @@ import shutil
 import subprocess
 import sys
 
+import torch
 import wandb
 from cleanfid import fid as cleanfid
+from dotenv import load_dotenv
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 sys.path.insert(0, PROJECT_ROOT)
 from src.baseline_model import make_inference_dataroot, run_inference
 
 CUT_DIR  = os.path.join(PROJECT_ROOT, "contrastive-unpaired-translation")
 DATA_DIR = os.path.join(PROJECT_ROOT, "output", "cut_data")
-DEVICE   = "cuda"
+DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
+FID_DEVICE = torch.device(DEVICE)
 
-with wandb.init() as run:
+load_dotenv(ENV_PATH)
+WANDB_PROJECT = os.getenv("WANDB_PROJECT", "ACV_cswk-scripts")
+
+with wandb.init(project=WANDB_PROJECT) as run:
     cfg = run.config
     exp_name = f"sweep_{run.id}"
     ckpt_dir = os.path.join(CUT_DIR, "checkpoints", exp_name)
@@ -61,7 +68,7 @@ with wandb.init() as run:
     )
 
     fid_score = cleanfid.compute_fid(
-        testB, os.path.join(results_dir, "fake"), device=DEVICE, verbose=False
+        testB, os.path.join(results_dir, "fake"), device=FID_DEVICE, verbose=False
     )
     wandb.log({"fid_g2m": fid_score})
     print(f"FID: {fid_score:.2f}")

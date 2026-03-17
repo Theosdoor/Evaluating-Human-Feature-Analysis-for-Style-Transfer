@@ -75,8 +75,10 @@ RUN_CLASSIFICATION = False # need RELOAD_RUN != None to use this
 
 # -- 2.2 --
 
+# %% [markdown]
+# ## 1.1. Human Patch Extraction
+
 # %%
-# 1.1. Human Patch Extraction
 extract_save_path = os.path.join(SAVE_DIR, "extracted_humans", RELOAD_RUN if RELOAD_RUN else SAVE_NAME)
 n2save = 4000
 
@@ -132,8 +134,10 @@ else:
     print(f"Using freshly-extracted patches from {extract_save_path}")
     save_extraction_summary(extract_save_path, detections, selected_detections)
 
+# %% [markdown]
+# ## 1.2. Classification
+
 # %%
-# 1.2. Classification
 cls_input_path = extract_save_path
 cls_base_dir = os.path.join(SAVE_DIR, "classifications")
 if RELOAD_RUN and RUN_CLASSIFICATION:
@@ -178,9 +182,10 @@ else:
 
 total_classified = sum(summary.values())
 
-# %%
-# 1.3 Training Data Selection
+# %% [markdown]
+# ## 1.3 Training Data Selection
 
+# %%
 # ... DONT TOUCH THIS
 
 
@@ -275,3 +280,9 @@ save_umap(
     os.path.join(VIZ_DIR, "umap_movie2game.png"),
     device=DEVICE,
 )
+
+
+# %% [markdown]
+# ## 2.2 Enhanced model
+
+# %%
