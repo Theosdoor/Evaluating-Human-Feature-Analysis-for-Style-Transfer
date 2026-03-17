@@ -34,17 +34,28 @@ from src.classification import *
 from src.utils import *
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
-TRAIN_PATHS = [
-    os.path.join(DATA_DIR,"Train/game/MafiaVideogame.mp4"),
-    os.path.join(DATA_DIR,"Train/movie/TheGodfather.mp4"),
-    os.path.join(DATA_DIR,"Train/movie/TheIrishman.mp4"),
-    os.path.join(DATA_DIR,"Train/movie/TheSopranos.mp4"),
+TRAIN_DATA = [
+    {
+        "path": os.path.join(DATA_DIR, "Train/game/MafiaVideogame.mp4"),
+        "duration": 8464,  # 2:21:04
+        "domain": "game"
+    },
+    {
+        "path": os.path.join(DATA_DIR, "Train/movie/TheGodfather.mp4"),
+        "duration": 539,  # 8:59
+        "domain": "movie"
+    },
+    {
+        "path": os.path.join(DATA_DIR, "Train/movie/TheIrishman.mp4"),
+        "duration": 927,  # 15:27
+        "domain": "movie"
+    },
+    {
+        "path": os.path.join(DATA_DIR, "Train/movie/TheSopranos.mp4"),
+        "duration": 1723,  # 28:43
+        "domain": "movie"
+    },
 ]
-# Video durations in seconds
-# MafiaVideogame: 2:21:04 = 8464s | TheGodfather: 8:59 = 539s
-# TheIrishman: 15:27 = 927s       | TheSopranos: 28:43 = 1723s
-TRAIN_DURATIONS = [8464, 539, 927, 1723]
-TRAIN_DOMAINS = ['game', 'movie', 'movie', 'movie']  # domain label per video
 
 TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
 SAVE_DIR = os.path.join(PROJECT_ROOT, "output")
@@ -58,28 +69,42 @@ if not os.path.exists(os.path.join(PROJECT_ROOT, "contrastive-unpaired-translati
     url = "https://github.com/Theosdoor/contrastive-unpaired-translation.git"
     subprocess.run(["git", "clone", url], check=True)
 
+# %%
+# Which parts of pipeline to run?
+
+RUN_FULL_PIPELINE = False # True = run all stages ignoring reload flags. False = skip stages with reload flags set (see below).
 # -- 1.1 --
 # Set to a run timestamp to reload existing outputs and skip stages already done.
 # Leave as None to run the full pipeline from scratch.
 # e.g. RELOAD_RUN = "20260224-224712"
-RELOAD_RUN = None
-RELOAD_RUN = "20260314-195748"
+RELOAD_EXTRACT = None # skip 1.1
+RELOAD_EXTRACT = "20260314-195748"
 
 # -- 1.2 --
-# Set True to re-run classification even when RELOAD_RUN is set.
-RUN_CLASSIFICATION = False # need RELOAD_RUN != None to use this
+# Set to None to run classification.
+# Set to a folder name under output/classifications to reload existing results.
+RELOAD_CLS = None
+RELOAD_CLS = "20260314-195748-3"
 
 # -- 1.3 --
+RELOAD_TRAIN_SELECT = None # skip 1.3
 
 # -- 2.1 --
+# toggles for quick checkpoint-only runs
+RUN_TRAIN_CUT = False
+RUN_TRANSLATE_VIDEO = True
 
 # -- 2.2 --
+
+# Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
+reload_extract = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
+reload_cls = None if RUN_FULL_PIPELINE else RELOAD_CLS
 
 # %% [markdown]
 # ## 1.1. Human Patch Extraction
 
 # %%
-extract_save_path = os.path.join(SAVE_DIR, "extracted_humans", RELOAD_RUN if RELOAD_RUN else SAVE_NAME)
+extract_save_path = os.path.join(SAVE_DIR, "extracted_humans", reload_extract if reload_extract else SAVE_NAME)
 n2save = 4000
 
 # extraction params
@@ -92,9 +117,9 @@ blur_threshold_game=100.0
 detections = []         # all raw detections (for diagnostics)
 selected_detections = []
 
-if RELOAD_RUN:
+if reload_extract:
     # Reload existing extracted patches
-    selected_detections = reload_extracted_patches(extract_save_path, TRAIN_PATHS)
+    selected_detections = reload_extracted_patches(extract_save_path, [d["path"] for d in TRAIN_DATA])
 else:
     model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
     model.to(DEVICE)
@@ -103,17 +128,17 @@ else:
     # Movie budget is split proportionally by duration across its 3 films.
     domain_budget = n2save // 2  # 2000 per domain
     targets = []
-    movie_durations = [d for d, dom in zip(TRAIN_DURATIONS, TRAIN_DOMAINS) if dom == 'movie']
+    movie_durations = [d["duration"] for d in TRAIN_DATA if d["domain"] == 'movie']
     movie_total = sum(movie_durations)
-    for dur, dom in zip(TRAIN_DURATIONS, TRAIN_DOMAINS):
-        if dom == 'game':
+    for data in TRAIN_DATA:
+        if data["domain"] == 'game':
             targets.append(domain_budget)
         else:
-            targets.append(int(domain_budget * dur / movie_total))
+            targets.append(int(domain_budget * data["duration"] / movie_total))
     targets[-1] += n2save - sum(targets)  # absorb rounding remainder
 
-    for path, target in tqdm(zip(TRAIN_PATHS, targets), desc="Processing training videos", unit="video", total=len(TRAIN_PATHS)):
-        video_dets = extract_humans_from_video(model, path, 
+    for data, target in tqdm(zip(TRAIN_DATA, targets), desc="Processing training videos", unit="video", total=len(TRAIN_DATA)):
+        video_dets = extract_humans_from_video(model, data["path"], 
                                                 yolo_batch_size=detection_b_size,
                                                 yolo_interval=yolo_interval,
                                                 scene_change_threshold=scene_change_threshold,
@@ -140,13 +165,13 @@ else:
 # %%
 cls_input_path = extract_save_path
 cls_base_dir = os.path.join(SAVE_DIR, "classifications")
-if RELOAD_RUN and RUN_CLASSIFICATION:
-    cls_save_path = get_next_reclassify_dir(cls_base_dir, os.path.basename(extract_save_path))
+if reload_cls:
+    cls_save_path = os.path.join(cls_base_dir, reload_cls)
 else:
     cls_save_path = os.path.join(cls_base_dir, os.path.basename(extract_save_path))
 classify_b_size = 32
 
-if RELOAD_RUN and not RUN_CLASSIFICATION:
+if reload_cls:
     # Reload existing classification results
     results, summary = reload_classification_results(cls_save_path)
 else:
@@ -186,6 +211,8 @@ total_classified = sum(summary.values())
 # ## 1.3 Training Data Selection
 
 # %%
+save_dir = os.path.join(SAVE_DIR, "training_data_selection", os.path.basename(cls_save_path))
+os.makedirs(save_dir, exist_ok=True)
 # ... DONT TOUCH THIS
 
 
@@ -202,53 +229,60 @@ total_classified = sum(summary.values())
 # Dataset preparation + CUT training
 from src.baseline_model import build_frame_dataset, train_cut, translate_test_video
 
-CUT_DIR        = os.path.join(PROJECT_ROOT, "contrastive-unpaired-translation")
-DATA_2_1       = os.path.join(SAVE_DIR, "cut_data")
-EXP_GAME2MOVIE = "cut_game2movie"
-EXP_MOVIE2GAME = "cut_movie2game"
+cut_dir = os.path.join(PROJECT_ROOT, "contrastive-unpaired-translation")
+data_2_1 = os.path.join(SAVE_DIR, "cut_data")
+exp_game2movie = "cut_game2movie"
+exp_movie2game = "cut_movie2game"
 
 # Hyperparams — reduce epochs or batch size if time / VRAM constrained
-N_FRAMES_PER_DOMAIN = 500
-N_EPOCHS            = 20
-N_EPOCHS_DECAY      = 5
-BATCH_SIZE          = 4      # use 2 if VRAM < 8 GB
+n_frames_per_domain = 500
+n_epochs            = 20
+n_epochs_decay      = 5
+batch_size          = 4      # use 2 if VRAM < 8 GB
 
 trainA, trainB, testA, testB = build_frame_dataset(
-    selected_detections, TRAIN_PATHS, DATA_2_1, N_FRAMES_PER_DOMAIN
+    selected_detections, [d["path"] for d in TRAIN_DATA], data_2_1, n_frames_per_domain
 )
 
-train_cut(CUT_DIR, DATA_2_1, EXP_GAME2MOVIE, "AtoB", DEVICE, N_EPOCHS, N_EPOCHS_DECAY, BATCH_SIZE)
-train_cut(CUT_DIR, DATA_2_1, EXP_MOVIE2GAME, "BtoA", DEVICE, N_EPOCHS, N_EPOCHS_DECAY, BATCH_SIZE)
+if RUN_TRAIN_CUT:
+    train_cut(cut_dir, data_2_1, exp_game2movie, "AtoB", DEVICE, n_epochs, n_epochs_decay, batch_size)
+    train_cut(cut_dir, data_2_1, exp_movie2game, "BtoA", DEVICE, n_epochs, n_epochs_decay, batch_size)
+else:
+    print("Skipping CUT training (RUN_TRAIN_CUT=False).")
 
-baseline_video = translate_test_video(CUT_DIR, EXP_GAME2MOVIE, TEST_PATH, SAVE_DIR, DEVICE)
-print(f"Baseline video → {baseline_video}")
+if RUN_TRANSLATE_VIDEO:
+    baseline_video = translate_test_video(cut_dir, exp_game2movie, TEST_PATH, SAVE_DIR, DEVICE)
+    print(f"Baseline video → {baseline_video}")
+else:
+    baseline_video = None
+    print("Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
 
 # %%
 # Metrics (FID, KID, LPIPS)
 import glob, json
 from src.baseline_model import run_inference, make_inference_dataroot, compute_metrics
 
-RESULTS_DIR = os.path.join(SAVE_DIR, "2_1_results")
+results_dir = os.path.join(SAVE_DIR, "2_1_results")
 
-g2m_fakes = run_inference(CUT_DIR, EXP_GAME2MOVIE,
+g2m_fakes = run_inference(cut_dir, exp_game2movie,
                            make_inference_dataroot(testA, testB),
-                           os.path.join(RESULTS_DIR, "g2m"), "AtoB", DEVICE)
-m2g_fakes = run_inference(CUT_DIR, EXP_MOVIE2GAME,
+                           os.path.join(results_dir, "g2m"), "AtoB", DEVICE)
+m2g_fakes = run_inference(cut_dir, exp_movie2game,
                            make_inference_dataroot(testB, testA),
-                           os.path.join(RESULTS_DIR, "m2g"), "AtoB", DEVICE)
+                           os.path.join(results_dir, "m2g"), "AtoB", DEVICE)
 
 metrics = {
-    "game→movie": compute_metrics(testB, os.path.join(RESULTS_DIR, "g2m", "fake"),
+    "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"),
                                   glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes, DEVICE),
-    "movie→game": compute_metrics(testA, os.path.join(RESULTS_DIR, "m2g", "fake"),
+    "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake"),
                                   glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes, DEVICE),
 }
 for direction, vals in metrics.items():
     print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
 
-VIZ_DIR = os.path.join(SAVE_DIR, "2_1_viz")
-os.makedirs(VIZ_DIR, exist_ok=True)
-with open(os.path.join(VIZ_DIR, "metrics.json"), "w") as f:
+viz_dir = os.path.join(SAVE_DIR, "2_1_viz")
+os.makedirs(viz_dir, exist_ok=True)
+with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
     json.dump(metrics, f, indent=2)
 
 # %%
@@ -256,9 +290,9 @@ with open(os.path.join(VIZ_DIR, "metrics.json"), "w") as f:
 from src.baseline_model import save_comparison_grid, save_umap
 
 save_comparison_grid(glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes,
-                     "game → movie (CUT)", os.path.join(VIZ_DIR, "comparison_game2movie.png"))
+                     "game → movie (CUT)", os.path.join(viz_dir, "comparison_game2movie.png"))
 save_comparison_grid(glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes,
-                     "movie → game (CUT)", os.path.join(VIZ_DIR, "comparison_movie2game.png"))
+                     "movie → game (CUT)", os.path.join(viz_dir, "comparison_movie2game.png"))
 
 save_umap(
     [glob.glob(os.path.join(testA, "*.jpg")),
@@ -267,7 +301,7 @@ save_umap(
     ["game (real)", "movie (real)", "game→movie (fake)"],
     ["steelblue", "tomato", "mediumpurple"],
     "VGG feature UMAP: game→movie",
-    os.path.join(VIZ_DIR, "umap_game2movie.png"),
+    os.path.join(viz_dir, "umap_game2movie.png"),
     device=DEVICE,
 )
 save_umap(
@@ -277,7 +311,7 @@ save_umap(
     ["game (real)", "movie (real)", "movie→game (fake)"],
     ["steelblue", "tomato", "seagreen"],
     "VGG feature UMAP: movie→game",
-    os.path.join(VIZ_DIR, "umap_movie2game.png"),
+    os.path.join(viz_dir, "umap_movie2game.png"),
     device=DEVICE,
 )
 

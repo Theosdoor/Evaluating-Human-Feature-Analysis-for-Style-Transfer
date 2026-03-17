@@ -194,6 +194,10 @@ def run_inference(cut_dir, exp_name, input_dataroot, results_dir, direction, dev
         print(f"  Inference cache hit: {fake_dir} ({len(existing)} images)")
         return existing
 
+    # CUT expects either {trainA, trainB} with --phase train or
+    # {testA, testB} with --phase test. Pick whichever split exists.
+    phase = "test" if os.path.isdir(os.path.join(input_dataroot, "testA")) else "train"
+
     gpu_ids = "0" if device == "cuda" else "-1"
     cmd = [
         sys.executable, os.path.join(cut_dir, "test.py"),
@@ -208,12 +212,12 @@ def run_inference(cut_dir, exp_name, input_dataroot, results_dir, direction, dev
         "--crop_size",       "256",
         "--no_flip",
         "--num_test",        "9999",
-        "--phase",           "test",
+        "--phase",           phase,
         "--eval",
     ]
     subprocess.run(cmd, check=True, cwd=cut_dir)
 
-    raw_dir = os.path.join(cut_dir, "results", exp_name, "test_latest", "images")
+    raw_dir = os.path.join(cut_dir, "results", exp_name, f"{phase}_latest", "images")
     for p in glob.glob(os.path.join(raw_dir, "*fake_B*")):
         dst = os.path.join(fake_dir, os.path.basename(p).replace("_fake_B", ""))
         if not os.path.exists(dst):
