@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "clean-fid>=0.1.35",
+    "dominate>=2.9.1",
     "ipykernel>=7.2.0",
     "nbformat>=5.10.4",
     "numpy>=2.2.6",
@@ -28,3 +29,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[tool.uv.workspace]
+members = [
+    "contrastive-unpaired-translation",
+]

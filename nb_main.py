@@ -40,7 +40,7 @@ TRAIN_PATHS = [
     os.path.join(DATA_DIR,"Train/movie/TheIrishman.mp4"),
     os.path.join(DATA_DIR,"Train/movie/TheSopranos.mp4"),
 ]
-# Video durations in seconds (from ffprobe)
+# Video durations in seconds
 # MafiaVideogame: 2:21:04 = 8464s | TheGodfather: 8:59 = 539s
 # TheIrishman: 15:27 = 927s       | TheSopranos: 28:43 = 1723s
 TRAIN_DURATIONS = [8464, 539, 927, 1723]
@@ -50,17 +50,30 @@ TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
 SAVE_DIR = os.path.join(PROJECT_ROOT, "output")
 SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
 
+DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+print(f"Using device: {DEVICE}")
+
+# download external repos if necessary
+if not os.path.exists(os.path.join(PROJECT_ROOT, "contrastive-unpaired-translation")):
+    url = "https://github.com/Theosdoor/contrastive-unpaired-translation.git"
+    subprocess.run(["git", "clone", url], check=True)
+
+# -- 1.1 --
 # Set to a run timestamp to reload existing outputs and skip stages already done.
 # Leave as None to run the full pipeline from scratch.
 # e.g. RELOAD_RUN = "20260224-224712"
 RELOAD_RUN = None
-# RELOAD_RUN = "20260314-195748"
+RELOAD_RUN = "20260314-195748"
 
+# -- 1.2 --
 # Set True to re-run classification even when RELOAD_RUN is set.
 RECLASSIFY = True # need RELOAD_RUN != None to use this
 
-DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-print(f"Using device: {DEVICE}")
+# -- 1.3 --
+
+# -- 2.1 --
+
+# -- 2.2 --
 
 # %%
 # 1.1. Human Patch Extraction
@@ -166,3 +179,16 @@ else:
 total_classified = sum(summary.values())
 
 # %%
+# 1.3 Training Data Selection
+
+# ... DONT TOUCH THIS
+
+
+
+# %% [markdown]
+# ## 2.1 Image Model Deployment (baseline model)
+
+# %%
+# 1. using contrastive-unpaired-translation, apply it to output/extracted_humans/20260314-195748 to convert images between game and movie domains.
+# 2. analyse performance in both directions using appropriate metrics (e.g. FID, KID, LPIPS) and visualizations (e.g. UMAPs).
+# 3. Transfer the style humans in downloaded_data/Test/Test.mp4 and save the video to output/baseline_model.

@@ -1,5 +1,6 @@
 """
-classification.py  —  v1.3
+Question 1.2
+classification.py
 
 Pose-based human patch classification into five categories:
   full_body_front, full_body_back, head_shoulder_front, head_shoulder_back, others
@@ -113,7 +114,7 @@ class ClassifierConfig:
             self.nose_back_conf = self.back_conf
 
 
-# Default config — v1.3 behaviour.
+# Default config
 DEFAULT_CONFIG = ClassifierConfig()
 
 
