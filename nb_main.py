@@ -213,8 +213,20 @@ total_classified = sum(summary.values())
 
 # %%
 save_dir = os.path.join(SAVE_DIR, "training_data_selection", os.path.basename(cls_save_path))
-os.makedirs(save_dir, exist_ok=True)
-# ... DONT TOUCH THIS
+
+from src.data import get_data_split, flat_paths, flat_paths_by_domain
+
+split = get_data_split(
+    cls_save_path,
+    train_split=1.0,
+    exclude_classes=['others'],  # drop ambiguous patches
+)
+
+train_game, train_movie = flat_paths_by_domain(split['train'])
+val_game, val_movie = flat_paths_by_domain(split['val'])
+
+# TODO - same splits at save_dir
+# os.makedirs(save_dir, exist_ok=True)
 
 
 

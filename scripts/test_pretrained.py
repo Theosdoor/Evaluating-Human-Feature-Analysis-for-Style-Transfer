@@ -2,6 +2,7 @@ import argparse
 import glob
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -11,6 +12,7 @@ if PROJECT_ROOT not in sys.path:
 	sys.path.insert(0, PROJECT_ROOT)
 
 from src.baseline_model import compute_metrics
+from src.data import flat_paths_by_domain, get_data_split
 
 
 PRETRAINED_URL = "http://efrosgans.eecs.berkeley.edu/CUT/pretrained_models.tar"
@@ -22,6 +24,64 @@ PRETRAINED_MODELS = [
 	"cat2dog_cut_pretrained",
 	"cat2dog_fastcut_pretrained",
 ]
+
+
+def _image_paths(dir_path):
+	patterns = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
+	paths = []
+	for pattern in patterns:
+		paths.extend(glob.glob(os.path.join(dir_path, pattern)))
+	return sorted(paths)
+
+
+def _latest_classification_dir(project_root):
+	base = os.path.join(project_root, "output", "classifications")
+	if not os.path.isdir(base):
+		raise FileNotFoundError(f"Classification base dir not found: {base}")
+	dirs = [os.path.join(base, d) for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+	if not dirs:
+		raise FileNotFoundError(f"No classification runs found in: {base}")
+	return max(dirs, key=os.path.getmtime)
+
+
+def _build_split_dataroot(project_root, cls_dir, split_ratio, seed, exclude_classes_csv, split_name):
+	exclude_classes = [c.strip() for c in exclude_classes_csv.split(",") if c.strip()]
+	split = get_data_split(
+		cls_dir,
+		train_split=split_ratio,
+		seed=seed,
+		exclude_classes=exclude_classes,
+	)
+	train_game, train_movie = flat_paths_by_domain(split["train"])
+
+	if not train_game or not train_movie:
+		raise RuntimeError(
+			"Split produced empty game or movie train set. "
+			"Try reducing exclusions or using a lower split ratio."
+		)
+
+	name = split_name or f"split_{str(split_ratio).replace('.', 'p')}_{os.path.basename(cls_dir)}"
+	dataroot = os.path.join(project_root, "output", "pretrained_eval_dataroot", name)
+	train_a = os.path.join(dataroot, "trainA")
+	train_b = os.path.join(dataroot, "trainB")
+
+	if os.path.isdir(dataroot):
+		shutil.rmtree(dataroot)
+	os.makedirs(train_a, exist_ok=True)
+	os.makedirs(train_b, exist_ok=True)
+
+	for i, src in enumerate(train_game):
+		dst = os.path.join(train_a, f"game_{i:06d}{os.path.splitext(src)[1].lower()}")
+		os.symlink(os.path.abspath(src), dst)
+	for i, src in enumerate(train_movie):
+		dst = os.path.join(train_b, f"movie_{i:06d}{os.path.splitext(src)[1].lower()}")
+		os.symlink(os.path.abspath(src), dst)
+
+	print(f"Built split dataroot from {cls_dir}")
+	print(f"  trainA (game):  {len(train_game)}")
+	print(f"  trainB (movie): {len(train_movie)}")
+	print(f"  dataroot: {dataroot}")
+	return dataroot
 
 
 def ensure_pretrained_models(cut_dir):
@@ -78,8 +138,8 @@ def evaluate_metrics(dataroot, output_dir, direction, device, phase):
 	tgt_dir = os.path.join(dataroot, f"{phase}B")
 	fake_a = sorted(glob.glob(os.path.join(output_dir, "*fake_A*")))
 	fake_b = sorted(glob.glob(os.path.join(output_dir, "*fake_B*")))
-	a_paths = sorted(glob.glob(os.path.join(src_dir, "*.jpg")))
-	b_paths = sorted(glob.glob(os.path.join(tgt_dir, "*.jpg")))
+	a_paths = _image_paths(src_dir)
+	b_paths = _image_paths(tgt_dir)
 
 	if direction == "AtoB":
 		if not fake_b:
@@ -98,6 +158,17 @@ def main():
 	parser.add_argument("--results-dir", default=None)
 	parser.add_argument("--direction", choices=["AtoB", "BtoA", "both"], default="both")
 	parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+	parser.add_argument("--use-data-split", action="store_true",
+	                    help="Build dataroot from src.data.get_data_split before running pretrained tests")
+	parser.add_argument("--cls-dir", default=None,
+	                    help="Classification run directory (default: latest under output/classifications)")
+	parser.add_argument("--split-train-ratio", type=float, default=1.0,
+	                    help="train_split passed to get_data_split when --use-data-split is set")
+	parser.add_argument("--split-seed", type=int, default=42)
+	parser.add_argument("--exclude-classes", default="others",
+	                    help="Comma-separated classes to exclude in split mode")
+	parser.add_argument("--split-name", default=None,
+	                    help="Optional name for generated split dataroot directory")
 	args = parser.parse_args()
 
 	project_root = os.path.abspath(args.project_root)
@@ -107,6 +178,24 @@ def main():
 
 	if not os.path.isdir(cut_dir):
 		raise FileNotFoundError(f"CUT directory not found: {cut_dir}")
+
+	if args.use_data_split:
+		cls_dir = os.path.abspath(args.cls_dir) if args.cls_dir else _latest_classification_dir(project_root)
+		dataroot = _build_split_dataroot(
+			project_root,
+			cls_dir,
+			args.split_train_ratio,
+			args.split_seed,
+			args.exclude_classes,
+			args.split_name,
+		)
+		if args.results_dir is None:
+			split_tag = str(args.split_train_ratio).replace('.', 'p')
+			results_dir = os.path.join(project_root, "output", f"pretrained_eval_split_{split_tag}")
+		print(f"Using data-split dataroot: {dataroot}")
+	else:
+		print(f"Using dataroot: {dataroot}")
+
 	if not os.path.isdir(dataroot):
 		raise FileNotFoundError(f"Dataroot not found: {dataroot}")
 	if not (
