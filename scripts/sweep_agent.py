@@ -20,7 +20,7 @@ ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 sys.path.insert(0, PROJECT_ROOT)
 from src.baseline_model import make_inference_dataroot, run_inference
 
-CUT_DIR  = os.path.join(PROJECT_ROOT, "contrastive-unpaired-translation")
+CUT_DIR  = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
 DATA_DIR = os.path.join(PROJECT_ROOT, "output", "cut_data")
 DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
 FID_DEVICE = torch.device(DEVICE)

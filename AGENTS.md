@@ -32,6 +32,12 @@ downloaded_data/
   Test/Test.mp4
 ```
 
+## Classification Output Naming
+
+- For classification reruns, use `get_next_reclassify_dir` from `src/utils.py`.
+- Do not reimplement suffix increment logic in `nb_main.py`; centralize it in `src/utils.py`.
+- Expected pattern: if `20260314-195748-1` and `20260314-195748-3` exist, next is `20260314-195748-4`.
+
 
 
 ## Submission Requirements

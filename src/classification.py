@@ -100,7 +100,7 @@ class ClassifierConfig:
     # Thresholds
     face_conf:         float = 0.30
     back_conf:         float = 0.10
-    nose_back_conf:    float = None    # defaults to back_conf if None
+    nose_back_conf:    float = 0.25
     body_conf:         float = 0.20
     max_eyes_for_back: int   = 1
     aspect_ratio_min:  float = 1.5

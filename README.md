@@ -1,5 +1,8 @@
 # ACV Cswk
 
+deps to install into external/:
+- 
+
 ## Dataset
 
 | File | Duration | Size | Resolution | FPS | Frames | Bitrate | Domain |

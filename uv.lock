@@ -523,7 +523,7 @@ wheels = [
 [[package]]
 name = "contrastive-unpaired-translation"
 version = "0.1.0"
-source = { virtual = "contrastive-unpaired-translation" }
+source = { virtual = "external/contrastive-unpaired-translation" }
 dependencies = [
     { name = "dominate" },
     { name = "gputil" },

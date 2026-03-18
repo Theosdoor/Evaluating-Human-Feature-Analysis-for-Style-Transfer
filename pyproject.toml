@@ -35,5 +35,5 @@ packages = ["src"]
 
 [tool.uv.workspace]
 members = [
-    "contrastive-unpaired-translation",
+    "external/contrastive-unpaired-translation",
 ]

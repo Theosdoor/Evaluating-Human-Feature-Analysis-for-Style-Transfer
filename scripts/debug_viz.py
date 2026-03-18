@@ -39,14 +39,12 @@ TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
 SAVE_DIR = os.path.join(PROJECT_ROOT, "output")
 SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
 
-RELOAD_RUN = "20260224-224712"
-
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
 # %%
 # ── Change these three variables to inspect a different patch ───────────────
-DIAG_RUN   = "20260314-195748-1"
+DIAG_RUN   = "20260314-195748-4"
 DIAG_CLASS = "others"
 DIAG_IMAGE = "human_0002_TheGodfather_f001504_conf0.92_score0.86"
 
@@ -100,13 +98,8 @@ def show_patch_debug(rel_path: str, root: str = PROJECT_ROOT) -> None:
     plt.tight_layout()
     plt.show()
 
-
-
-
 view_path = os.path.join("output", "classifications", DIAG_RUN, DIAG_CLASS, DIAG_IMAGE + ".jpg")
 show_patch_debug(view_path)
-
-# %%
 
 # %%
 # ── Deep classification diagnostic ──────────────────────────────────────────
@@ -160,23 +153,24 @@ _x2c, _y2c = min(_w, _x2), min(_h, _y2)
 _crop_rgb  = _img_rgb[_y1c:_y2c, _x1c:_x2c]
 
 # --- pose-only decision trace ---
-_orientation = _clf_mod.classify_orientation(_kps)
-_extent = _clf_mod.classify_extent(_kps, _bbox)
-_final_cls = _clf_mod.classify_keypoints(_kps, _bbox)
+_cfg = _clf_mod.DEFAULT_CONFIG
+_orientation = _clf_mod.classify_orientation(_kps, _cfg)
+_extent = _clf_mod.classify_extent(_kps, _bbox, _cfg)
+_final_cls = _clf_mod.classify_keypoints(_kps, _bbox, _cfg)
 
 _nose = _kps[0, 2]
 _l_eye = _kps[1, 2]
 _r_eye = _kps[2, 2]
 
-_n_lower = _clf_mod.n_visible(_kps, _clf_mod.LOWER_KPS, _clf_mod.BODY_CONF)
-_n_ankles = _clf_mod.n_visible(_kps, _clf_mod.ANKLE_KPS, _clf_mod.BODY_CONF)
-_n_shoulders = _clf_mod.n_visible(_kps, _clf_mod.UPPER_KPS, _clf_mod.BODY_CONF)
+_n_lower = _clf_mod.n_visible(_kps, _clf_mod.LOWER_KPS, _cfg.body_conf)
+_n_ankles = _clf_mod.n_visible(_kps, _clf_mod.ANKLE_KPS, _cfg.body_conf)
+_n_shoulders = _clf_mod.n_visible(_kps, _clf_mod.UPPER_KPS, _cfg.body_conf)
 _h_box = _bbox[3] - _bbox[1]
 _w_box = (_bbox[2] - _bbox[0]) + 1e-6
 _aspect = _h_box / _w_box
 
-_front_pass = (_nose >= _clf_mod.FACE_CONF and _l_eye >= _clf_mod.FACE_CONF and _r_eye >= _clf_mod.FACE_CONF)
-_back_pass = (_nose < _clf_mod.BACK_CONF and _l_eye < _clf_mod.BACK_CONF and _r_eye < _clf_mod.BACK_CONF)
+_front_pass = (_nose >= _cfg.face_conf and _l_eye >= _cfg.face_conf and _r_eye >= _cfg.face_conf)
+_back_pass = (_nose < _cfg.back_conf and _l_eye < _cfg.back_conf and _r_eye < _cfg.back_conf)
 _has_lower = (_n_ankles >= 1) or (_n_lower >= 3)
 _aspect_pass = _aspect >= 1.5
 _has_shoulder = _n_shoulders >= 1
@@ -185,13 +179,13 @@ _trace_rows = [
     [
         "Front check",
         f"nose={_nose:.2f} eyeL={_l_eye:.2f} eyeR={_r_eye:.2f}",
-        f">= FACE_CONF({_clf_mod.FACE_CONF:.2f})",
+        f">= FACE_CONF({_cfg.face_conf:.2f})",
         "PASS" if _front_pass else "FAIL",
     ],
     [
         "Back check",
         f"nose={_nose:.2f} eyeL={_l_eye:.2f} eyeR={_r_eye:.2f}",
-        f"< BACK_CONF({_clf_mod.BACK_CONF:.2f})",
+        f"< BACK_CONF({_cfg.back_conf:.2f})",
         "PASS" if _back_pass else "FAIL",
     ],
     [
@@ -209,7 +203,7 @@ _trace_rows = [
     [
         "Shoulder evidence",
         f"visible_shoulders={_n_shoulders}",
-        f">=1 @ BODY_CONF({_clf_mod.BODY_CONF:.2f})",
+        f">=1 @ BODY_CONF({_cfg.body_conf:.2f})",
         "PASS" if _has_shoulder else "FAIL",
     ],
 ]
@@ -233,13 +227,13 @@ for i, (box, area) in enumerate(zip(_boxes, _areas)):
     ax1.add_patch(rect)
     ax1.text(bx1, by1 - 4, f"#{i} area={int(area)}", color=color, fontsize=7)
 for ki, (kx, ky, kc) in enumerate(_kps):
-    if kc >= _clf_mod.BACK_CONF:
-        c = "lime" if kc >= _clf_mod.FACE_CONF else "gold"
+    if kc >= _cfg.back_conf:
+        c = "lime" if kc >= _cfg.face_conf else "gold"
         ax1.plot(kx, ky, "o", color=c, markersize=4)
         ax1.text(kx + 2, ky, COCO_KP_NAMES[ki], color=c, fontsize=5)
 ax1.set_title(
     f"All detections ({len(_boxes)} found)\n"
-    f"Red=primary  Green kp >= FACE_CONF={_clf_mod.FACE_CONF:.2f}  Gold>=BACK_CONF",
+    f"Red=primary  Green kp >= FACE_CONF={_cfg.face_conf:.2f}  Gold>=BACK_CONF",
     fontsize=8,
 )
 ax1.axis("off")
@@ -257,13 +251,13 @@ ax2.axis("off")
 # Panel 3: per-keypoint confidence bars
 ax3 = fig.add_subplot(gs[2])
 bar_colors = [
-    "tomato" if c < _clf_mod.BACK_CONF else ("gold" if c < _clf_mod.FACE_CONF else "limegreen")
+    "tomato" if c < _cfg.back_conf else ("gold" if c < _cfg.face_conf else "limegreen")
     for c in _kp_confs
 ]
 ax3.barh(range(17), _kp_confs, color=bar_colors)
-ax3.axvline(_clf_mod.BACK_CONF, color="gold", linestyle=":", linewidth=1, label=f"back_conf={_clf_mod.BACK_CONF:.2f}")
-ax3.axvline(_clf_mod.BODY_CONF, color="dodgerblue", linestyle="-.", linewidth=1, label=f"body_conf={_clf_mod.BODY_CONF:.2f}")
-ax3.axvline(_clf_mod.FACE_CONF, color="limegreen", linestyle="--", linewidth=1, label=f"face_conf={_clf_mod.FACE_CONF:.2f}")
+ax3.axvline(_cfg.back_conf, color="gold", linestyle=":", linewidth=1, label=f"back_conf={_cfg.back_conf:.2f}")
+ax3.axvline(_cfg.body_conf, color="dodgerblue", linestyle="-.", linewidth=1, label=f"body_conf={_cfg.body_conf:.2f}")
+ax3.axvline(_cfg.face_conf, color="limegreen", linestyle="--", linewidth=1, label=f"face_conf={_cfg.face_conf:.2f}")
 ax3.set_yticks(range(17))
 ax3.set_yticklabels(COCO_KP_NAMES, fontsize=7)
 ax3.set_xlim(0, 1)

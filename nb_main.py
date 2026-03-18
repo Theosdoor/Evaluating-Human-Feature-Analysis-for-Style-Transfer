@@ -65,7 +65,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 print(f"Using device: {DEVICE}")
 
 # download external repos if necessary
-if not os.path.exists(os.path.join(PROJECT_ROOT, "contrastive-unpaired-translation")):
+if not os.path.exists(os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")):
     url = "https://github.com/Theosdoor/contrastive-unpaired-translation.git"
     subprocess.run(["git", "clone", url], check=True)
 
@@ -84,7 +84,7 @@ RELOAD_EXTRACT = "20260314-195748"
 # Set to None to run classification.
 # Set to a folder name under output/classifications to reload existing results.
 RELOAD_CLS = None
-RELOAD_CLS = "20260314-195748-3"
+# RELOAD_CLS = "20260314-195748-3"
 
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None # skip 1.3
@@ -92,7 +92,7 @@ RELOAD_TRAIN_SELECT = None # skip 1.3
 # -- 2.1 --
 # toggles for quick checkpoint-only runs
 RUN_TRAIN_CUT = False
-RUN_TRANSLATE_VIDEO = True
+RUN_TRANSLATE_VIDEO = False
 
 # -- 2.2 --
 
@@ -168,7 +168,8 @@ cls_base_dir = os.path.join(SAVE_DIR, "classifications")
 if reload_cls:
     cls_save_path = os.path.join(cls_base_dir, reload_cls)
 else:
-    cls_save_path = os.path.join(cls_base_dir, os.path.basename(extract_save_path))
+    cls_save_path = get_next_reclassify_dir(cls_base_dir, os.path.basename(extract_save_path))
+
 classify_b_size = 32
 
 if reload_cls:
@@ -229,7 +230,7 @@ os.makedirs(save_dir, exist_ok=True)
 # Dataset preparation + CUT training
 from src.baseline_model import build_frame_dataset, train_cut, translate_test_video
 
-cut_dir = os.path.join(PROJECT_ROOT, "contrastive-unpaired-translation")
+cut_dir = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
 data_2_1 = os.path.join(SAVE_DIR, "cut_data")
 exp_game2movie = "cut_game2movie"
 exp_movie2game = "cut_movie2game"
@@ -258,62 +259,70 @@ else:
     print("Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
 
 # %%
-# Metrics (FID, KID, LPIPS)
+# Metrics (FID, KID, LPIPS) & viz
 import glob, json
 from src.baseline_model import run_inference, make_inference_dataroot, compute_metrics
 
 results_dir = os.path.join(SAVE_DIR, "2_1_results")
 
-g2m_fakes = run_inference(cut_dir, exp_game2movie,
-                           make_inference_dataroot(testA, testB),
-                           os.path.join(results_dir, "g2m"), "AtoB", DEVICE)
-m2g_fakes = run_inference(cut_dir, exp_movie2game,
-                           make_inference_dataroot(testB, testA),
-                           os.path.join(results_dir, "m2g"), "AtoB", DEVICE)
+def checkpoint_exists(cut_dir, exp_name):
+    return os.path.exists(os.path.join(cut_dir, "checkpoints", exp_name, "latest_net_G.pth"))
 
-metrics = {
-    "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"),
-                                  glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes, DEVICE),
-    "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake"),
-                                  glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes, DEVICE),
-}
-for direction, vals in metrics.items():
-    print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
+g2m_ready = checkpoint_exists(cut_dir, exp_game2movie)
+m2g_ready = checkpoint_exists(cut_dir, exp_movie2game)
 
-viz_dir = os.path.join(SAVE_DIR, "2_1_viz")
-os.makedirs(viz_dir, exist_ok=True)
-with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
-    json.dump(metrics, f, indent=2)
+if g2m_ready and m2g_ready:
+    g2m_fakes = run_inference(cut_dir, exp_game2movie,
+                              make_inference_dataroot(testA, testB),
+                              os.path.join(results_dir, "g2m"), "AtoB", DEVICE)
+    m2g_fakes = run_inference(cut_dir, exp_movie2game,
+                              make_inference_dataroot(testB, testA),
+                              os.path.join(results_dir, "m2g"), "AtoB", DEVICE)
 
-# %%
-# Visualisation — comparison grids + UMAPs
-from src.baseline_model import save_comparison_grid, save_umap
+    metrics = {
+        "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"),
+                                      glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes, DEVICE),
+        "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake"),
+                                      glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes, DEVICE),
+    }
+    for direction, vals in metrics.items():
+        print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
 
-save_comparison_grid(glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes,
-                     "game → movie (CUT)", os.path.join(viz_dir, "comparison_game2movie.png"))
-save_comparison_grid(glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes,
-                     "movie → game (CUT)", os.path.join(viz_dir, "comparison_movie2game.png"))
+    viz_dir = os.path.join(SAVE_DIR, "2_1_viz")
+    os.makedirs(viz_dir, exist_ok=True)
+    with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
+        json.dump(metrics, f, indent=2)
 
-save_umap(
-    [glob.glob(os.path.join(testA, "*.jpg")),
-     glob.glob(os.path.join(testB, "*.jpg")),
-     g2m_fakes],
-    ["game (real)", "movie (real)", "game→movie (fake)"],
-    ["steelblue", "tomato", "mediumpurple"],
-    "VGG feature UMAP: game→movie",
-    os.path.join(viz_dir, "umap_game2movie.png"),
-    device=DEVICE,
-)
-save_umap(
-    [glob.glob(os.path.join(testA, "*.jpg")),
-     glob.glob(os.path.join(testB, "*.jpg")),
-     m2g_fakes],
-    ["game (real)", "movie (real)", "movie→game (fake)"],
-    ["steelblue", "tomato", "seagreen"],
-    "VGG feature UMAP: movie→game",
-    os.path.join(viz_dir, "umap_movie2game.png"),
-    device=DEVICE,
-)
+    # Visualisation — comparison grids + UMAPs
+    from src.baseline_model import save_comparison_grid, save_umap
+
+    save_comparison_grid(glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes,
+                         "game → movie (CUT)", os.path.join(viz_dir, "comparison_game2movie.png"))
+    save_comparison_grid(glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes,
+                         "movie → game (CUT)", os.path.join(viz_dir, "comparison_movie2game.png"))
+
+    save_umap(
+        [glob.glob(os.path.join(testA, "*.jpg")),
+         glob.glob(os.path.join(testB, "*.jpg")),
+         g2m_fakes],
+        ["game (real)", "movie (real)", "game→movie (fake)"],
+        ["steelblue", "tomato", "mediumpurple"],
+        "VGG feature UMAP: game→movie",
+        os.path.join(viz_dir, "umap_game2movie.png"),
+        device=DEVICE,
+    )
+    save_umap(
+        [glob.glob(os.path.join(testA, "*.jpg")),
+         glob.glob(os.path.join(testB, "*.jpg")),
+         m2g_fakes],
+        ["game (real)", "movie (real)", "movie→game (fake)"],
+        ["steelblue", "tomato", "seagreen"],
+        "VGG feature UMAP: movie→game",
+        os.path.join(viz_dir, "umap_movie2game.png"),
+        device=DEVICE,
+    )
+else:
+    print("CUT checkpoints not found — skipping inference. Set RUN_TRAIN_CUT=True and re-run.")
 
 
 # %% [markdown]
