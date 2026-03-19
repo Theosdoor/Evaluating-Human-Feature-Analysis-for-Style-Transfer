@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import sys
 
+import cv2
+
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -102,6 +104,7 @@ def ensure_pretrained_models(cut_dir):
 
 def run_test(cut_dir, model_name, dataroot, results_dir, direction, gpu_ids):
 	phase = "test" if os.path.isdir(os.path.join(dataroot, "testA")) else "train"
+	results_dir_abs = os.path.abspath(results_dir)
 	cmd = [
 		sys.executable,
 		os.path.join(cut_dir, "test.py"),
@@ -109,7 +112,7 @@ def run_test(cut_dir, model_name, dataroot, results_dir, direction, gpu_ids):
 		"--name", model_name,
 		"--model", "cut",
 		"--direction", direction,
-		"--results_dir", results_dir,
+		"--results_dir", results_dir_abs,
 		"--checkpoints_dir", os.path.join(cut_dir, "checkpoints"),
 		"--gpu_ids", gpu_ids,
 		"--load_size", "256",
@@ -122,7 +125,7 @@ def run_test(cut_dir, model_name, dataroot, results_dir, direction, gpu_ids):
 	print(f"\nRunning: model={model_name} direction={direction}")
 	subprocess.run(cmd, check=True, cwd=cut_dir)
 
-	image_dir = os.path.join(results_dir, model_name, f"{phase}_latest", "images")
+	image_dir = os.path.join(results_dir_abs, model_name, f"{phase}_latest", "images")
 	fake_paths = glob.glob(os.path.join(image_dir, "*fake_A*")) + glob.glob(os.path.join(image_dir, "*fake_B*"))
 	return {
 		"model": model_name,
@@ -150,6 +153,36 @@ def evaluate_metrics(dataroot, output_dir, direction, device, phase):
 	return compute_metrics(src_dir, output_dir, b_paths, fake_a, device)
 
 
+def save_fake_video(output_dir, direction, fps=24):
+	if direction == "AtoB":
+		fake_paths = sorted(glob.glob(os.path.join(output_dir, "*fake_B*")))
+	else:
+		fake_paths = sorted(glob.glob(os.path.join(output_dir, "*fake_A*")))
+
+	if not fake_paths:
+		raise RuntimeError("No translated fake frames found for video export.")
+
+	first = cv2.imread(fake_paths[0])
+	if first is None:
+		raise RuntimeError(f"Could not read first fake image: {fake_paths[0]}")
+
+	h, w = first.shape[:2]
+	video_path = os.path.join(output_dir, f"translated_{direction}.mp4")
+	writer = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+	if not writer.isOpened():
+		raise RuntimeError(f"Could not open video writer for: {video_path}")
+
+	for path in fake_paths:
+		frame = cv2.imread(path)
+		if frame is None:
+			continue
+		if frame.shape[:2] != (h, w):
+			frame = cv2.resize(frame, (w, h))
+		writer.write(frame)
+	writer.release()
+	return video_path
+
+
 def main():
 	parser = argparse.ArgumentParser(description="Test all CUT pretrained models on movie-game style transfer data.")
 	parser.add_argument("--project-root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -169,6 +202,10 @@ def main():
 	                    help="Comma-separated classes to exclude in split mode")
 	parser.add_argument("--split-name", default=None,
 	                    help="Optional name for generated split dataroot directory")
+	parser.add_argument("--save-video", action="store_true",
+	                    help="If set, save translated fake frames as MP4 per model+direction")
+	parser.add_argument("--video-fps", type=float, default=24.0,
+	                    help="FPS for saved MP4 videos (used with --save-video)")
 	args = parser.parse_args()
 
 	project_root = os.path.abspath(args.project_root)
@@ -196,6 +233,8 @@ def main():
 	else:
 		print(f"Using dataroot: {dataroot}")
 
+	results_dir = os.path.abspath(results_dir)
+
 	if not os.path.isdir(dataroot):
 		raise FileNotFoundError(f"Dataroot not found: {dataroot}")
 	if not (
@@ -216,6 +255,13 @@ def main():
 		for direction in directions:
 			try:
 				run_info = run_test(cut_dir, model_name, dataroot, results_dir, direction, gpu_ids)
+				if args.save_video:
+					try:
+						run_info["video_path"] = save_fake_video(
+							run_info["output_dir"], direction, fps=args.video_fps
+						)
+					except Exception as video_exc:
+						run_info["video_error"] = str(video_exc)
 				try:
 					metrics = evaluate_metrics(
 						dataroot,
@@ -244,6 +290,7 @@ def main():
 	print("\nDone. Summary:")
 	for item in summary:
 		print(item)
+	print(f"Results directory -> {results_dir}")
 	print(f"\nSaved -> {summary_path}")
 
 
