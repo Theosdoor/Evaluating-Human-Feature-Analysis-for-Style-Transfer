@@ -36,6 +36,27 @@ def _image_paths(dir_path):
 	return sorted(paths)
 
 
+def _fake_paths_for_direction(output_dir, direction):
+	"""
+	CUT test.py writes outputs into subdirectories under images/:
+	  images/fake_B/  (for AtoB)
+	  images/fake_A/  (for BtoA)
+	rather than flat files with 'fake_B' in the filename.
+	Try both the subdirectory layout and the flat layout as a fallback.
+	"""
+	subdir_name = "fake_B" if direction == "AtoB" else "fake_A"
+	subdir = os.path.join(output_dir, subdir_name)
+	if os.path.isdir(subdir):
+		paths = _image_paths(subdir)
+		if paths:
+			return paths, subdir
+
+	# Fallback: flat files with domain in the name
+	glob_pattern = f"*{subdir_name}*"
+	paths = sorted(glob.glob(os.path.join(output_dir, glob_pattern)))
+	return paths, output_dir
+
+
 def _latest_classification_dir(project_root):
 	base = os.path.join(project_root, "output", "classifications")
 	if not os.path.isdir(base):
@@ -126,7 +147,7 @@ def run_test(cut_dir, model_name, dataroot, results_dir, direction, gpu_ids):
 	subprocess.run(cmd, check=True, cwd=cut_dir)
 
 	image_dir = os.path.join(results_dir_abs, model_name, f"{phase}_latest", "images")
-	fake_paths = glob.glob(os.path.join(image_dir, "*fake_A*")) + glob.glob(os.path.join(image_dir, "*fake_B*"))
+	fake_paths, _ = _fake_paths_for_direction(image_dir, direction)
 	return {
 		"model": model_name,
 		"direction": direction,
@@ -139,28 +160,26 @@ def run_test(cut_dir, model_name, dataroot, results_dir, direction, gpu_ids):
 def evaluate_metrics(dataroot, output_dir, direction, device, phase):
 	src_dir = os.path.join(dataroot, f"{phase}A")
 	tgt_dir = os.path.join(dataroot, f"{phase}B")
-	fake_a = sorted(glob.glob(os.path.join(output_dir, "*fake_A*")))
-	fake_b = sorted(glob.glob(os.path.join(output_dir, "*fake_B*")))
 	a_paths = _image_paths(src_dir)
 	b_paths = _image_paths(tgt_dir)
 
+	fake_paths, fake_dir = _fake_paths_for_direction(output_dir, direction)
+
+	if not fake_paths:
+		domain = "fake_B" if direction == "AtoB" else "fake_A"
+		raise RuntimeError(f"No {domain} outputs found in {output_dir} for {direction} metric evaluation.")
+
 	if direction == "AtoB":
-		if not fake_b:
-			raise RuntimeError("No fake_B outputs found for AtoB metric evaluation.")
-		return compute_metrics(tgt_dir, output_dir, a_paths, fake_b, device)
-	if not fake_a:
-		raise RuntimeError("No fake_A outputs found for BtoA metric evaluation.")
-	return compute_metrics(src_dir, output_dir, b_paths, fake_a, device)
+		return compute_metrics(tgt_dir, fake_dir, a_paths, fake_paths, device)
+	return compute_metrics(src_dir, fake_dir, b_paths, fake_paths, device)
 
 
 def save_fake_video(output_dir, direction, fps=24):
-	if direction == "AtoB":
-		fake_paths = sorted(glob.glob(os.path.join(output_dir, "*fake_B*")))
-	else:
-		fake_paths = sorted(glob.glob(os.path.join(output_dir, "*fake_A*")))
+	fake_paths, _ = _fake_paths_for_direction(output_dir, direction)
 
 	if not fake_paths:
-		raise RuntimeError("No translated fake frames found for video export.")
+		domain = "fake_B" if direction == "AtoB" else "fake_A"
+		raise RuntimeError(f"No translated {domain} frames found in {output_dir} for video export.")
 
 	first = cv2.imread(fake_paths[0])
 	if first is None:
@@ -180,6 +199,7 @@ def save_fake_video(output_dir, direction, fps=24):
 			frame = cv2.resize(frame, (w, h))
 		writer.write(frame)
 	writer.release()
+	print(f"Saved video -> {video_path}")
 	return video_path
 
 
@@ -296,4 +316,3 @@ def main():
 
 if __name__ == "__main__":
 	main()
-

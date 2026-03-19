@@ -10,11 +10,11 @@ you can quit and resume at any time.
 
 Usage
 -----
-    python3 scripts/annotate.py --cls-dir output/classifications/20260314-195748-5
+    python3 scripts/annotate.py --cls-dir output/classifications/20260314-195748
 
     # Resume a partially-annotated session
-    python3 scripts/annotate.py --cls-dir output/classifications/20260314-195748-5 \\
-        --out-dir output/manual_annotated/20260314-195748-5
+    python3 scripts/annotate.py --cls-dir output/classifications/20260314-195748 \\
+        --out-dir output/manual_annotated/20260314-195748
 
 Keys
 ----
@@ -351,7 +351,7 @@ def main():
     )
     parser.add_argument(
         "--cls-dir", required=True,
-        help="Path to a classification output directory (e.g. output/classifications/20260314-195748-5).",
+        help="Path to a classification output directory (e.g. output/classifications/20260314-195748).",
     )
     parser.add_argument(
         "--out-dir", default=None,

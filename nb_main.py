@@ -185,7 +185,7 @@ else:
         output_dir=cls_save_path,
         batch_size=classify_b_size,
         copy_files=True,       # copy files to classifications dir for easy reference
-        save_debug_viz=True,   # set True to save YOLO-annotated images to debug_viz/
+        save_debug_viz=False,   # set True to save YOLO-annotated images to debug_viz/
     )
 
     print(summary)
