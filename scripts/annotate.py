@@ -80,18 +80,15 @@ def _domain_from_fname(fname):
 # Diagnostic cache helpers
 # ---------------------------------------------------------------------------
 
-def _cache_path(diag_cache_dir, fname):
-    return os.path.join(diag_cache_dir, fname + ".jpg")
-
-
 def _render_and_cache(pose_model, src_path, label, diag_cache_dir, cfg=DEFAULT_CONFIG):
+    """Render and cache a diagnostic image. Returns the cache path or None."""
     img_bgr = cv2.imread(src_path)
     if img_bgr is None:
         return None
     try:
         result   = pose_model(img_bgr, verbose=False)[0]
         diag     = render_diagnostic(result, img_bgr, cfg, predicted_class=label)
-        out_path = _cache_path(diag_cache_dir, os.path.basename(src_path))
+        out_path = os.path.join(diag_cache_dir, os.path.basename(src_path) + ".jpg")
         os.makedirs(diag_cache_dir, exist_ok=True)
         cv2.imwrite(out_path, diag, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return out_path
@@ -111,11 +108,12 @@ class Prefetcher:
         self._q             = queue.Queue()
         self._in_flight     = set()
         self._lock          = threading.Lock()
-        self._threads       = []
-        for _ in range(n_workers):
-            t = threading.Thread(target=self._worker, daemon=True)
+        self._threads       = [
+            threading.Thread(target=self._worker, daemon=True)
+            for _ in range(n_workers)
+        ]
+        for t in self._threads:
             t.start()
-            self._threads.append(t)
 
     def stop(self):
         for _ in self._threads:
@@ -123,7 +121,7 @@ class Prefetcher:
 
     def schedule(self, items):
         for fname, src_path, label in items:
-            cp = _cache_path(self.diag_cache_dir, fname)
+            cp = os.path.join(self.diag_cache_dir, fname + ".jpg")
             with self._lock:
                 if os.path.exists(cp) or fname in self._in_flight:
                     continue
@@ -304,18 +302,21 @@ class AnnotationState:
 
     # ── Diagnostic cache ─────────────────────────────────────────────────────
 
+    def _cache_path(self, fname):
+        return os.path.join(self.diag_cache_dir, fname + ".jpg")
+
     def diag_ready(self, fname):
-        return os.path.exists(_cache_path(self.diag_cache_dir, fname))
+        return os.path.exists(self._cache_path(fname))
 
     def get_diag_path(self, fname, label):
-        cp = _cache_path(self.diag_cache_dir, fname)
+        cp = self._cache_path(fname)
         if os.path.exists(cp):
             return cp
         src_path, _ = self.fname_to_src[fname]
         return _render_and_cache(self.pose_model, src_path, label, self.diag_cache_dir)
 
     def invalidate_diag(self, fname):
-        cp = _cache_path(self.diag_cache_dir, fname)
+        cp = self._cache_path(fname)
         if os.path.exists(cp):
             os.remove(cp)
 
@@ -335,6 +336,7 @@ class AnnotationState:
         self.pose_model = YOLO(model_path)
         self.prefetcher = Prefetcher(self.pose_model, self.diag_cache_dir,
                                      n_workers=PREFETCH_WORKERS)
+        self._schedule_prefetch()
 
     def check_and_skip_no_pose(self, fname):
         """
@@ -1069,6 +1071,12 @@ def api_set_filter():
     return jsonify(redirect="/" if fname is not None else None)
 
 
+def _shutdown_server():
+    import time, signal
+    time.sleep(1.2)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 @app.route("/finish", methods=["POST"])
 def finish():
     if STATE.prefetcher:
@@ -1077,13 +1085,7 @@ def finish():
     copied = STATE.write_output_dirs()
     msg = f"Saved {STATE.n_done} annotations. Wrote {copied} files."
     print(f"\n{msg}\nAnnotations -> {STATE.json_path}\nOutput dirs -> {STATE.out_dir}")
-
-    def _shutdown():
-        import time, signal
-        time.sleep(1.2)
-        os.kill(os.getpid(), signal.SIGTERM)
-
-    threading.Thread(target=_shutdown, daemon=True).start()
+    threading.Thread(target=_shutdown_server, daemon=True).start()
     return jsonify(message=msg, redirect="/")
 
 
@@ -1124,8 +1126,7 @@ def main():
         patches, annotations, json_path, out_dir, diag_cache_dir,
         class_target=args.class_target,
     )
-    STATE.load_model(pose_model)
-    STATE._schedule_prefetch()
+    STATE.load_model(pose_model)  # also starts prefetch
 
     print(f"\nACV Annotator")
     print(f"  cls-dir      : {cls_dir}")
