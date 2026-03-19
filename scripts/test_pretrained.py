@@ -157,7 +157,7 @@ def run_test(cut_dir, model_name, dataroot, results_dir, direction, gpu_ids):
 	}
 
 
-def evaluate_metrics(dataroot, output_dir, direction, device, phase):
+def evaluate_metrics(dataroot, output_dir, direction, device, phase, metric_num_workers):
 	src_dir = os.path.join(dataroot, f"{phase}A")
 	tgt_dir = os.path.join(dataroot, f"{phase}B")
 	a_paths = _image_paths(src_dir)
@@ -170,8 +170,22 @@ def evaluate_metrics(dataroot, output_dir, direction, device, phase):
 		raise RuntimeError(f"No {domain} outputs found in {output_dir} for {direction} metric evaluation.")
 
 	if direction == "AtoB":
-		return compute_metrics(tgt_dir, fake_dir, a_paths, fake_paths, device)
-	return compute_metrics(src_dir, fake_dir, b_paths, fake_paths, device)
+		return compute_metrics(
+			tgt_dir,
+			fake_dir,
+			a_paths,
+			fake_paths,
+			device,
+			num_workers=metric_num_workers,
+		)
+	return compute_metrics(
+		src_dir,
+		fake_dir,
+		b_paths,
+		fake_paths,
+		device,
+		num_workers=metric_num_workers,
+	)
 
 
 def save_fake_video(output_dir, direction, fps=24):
@@ -226,6 +240,8 @@ def main():
 	                    help="If set, save translated fake frames as MP4 per model+direction")
 	parser.add_argument("--video-fps", type=float, default=24.0,
 	                    help="FPS for saved MP4 videos (used with --save-video)")
+	parser.add_argument("--metric-num-workers", type=int, default=2,
+	                    help="DataLoader workers for FID/KID (lower to avoid worker oversubscription warnings)")
 	args = parser.parse_args()
 
 	project_root = os.path.abspath(args.project_root)
@@ -289,6 +305,7 @@ def main():
 						direction,
 						args.device,
 						run_info["phase"],
+						args.metric_num_workers,
 					)
 					run_info["metrics"] = metrics
 				except Exception as metric_exc:

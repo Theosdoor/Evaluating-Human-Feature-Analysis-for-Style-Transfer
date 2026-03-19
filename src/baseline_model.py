@@ -304,7 +304,7 @@ def translate_test_video(cut_dir, exp_name, test_path, save_dir, device):
 # Metrics
 # ---------------------------------------------------------------------------
 
-def compute_metrics(real_dir, fake_dir, input_paths, fake_paths, device):
+def compute_metrics(real_dir, fake_dir, input_paths, fake_paths, device, num_workers=2):
     """
     Compute FID, KID (via torch-fidelity) and LPIPS (vs. input) for one direction.
 
@@ -313,12 +313,30 @@ def compute_metrics(real_dir, fake_dir, input_paths, fake_paths, device):
     input_paths : list of source-domain image paths      (for LPIPS)
     fake_paths  : list of translated image paths         (for LPIPS, same order)
 
+    num_workers : DataLoader worker count for CleanFID feature extraction.
+
     Returns a dict with keys FID, KID, LPIPS.
     """
+    if num_workers is None:
+        cpu_count = os.cpu_count() or 1
+        num_workers = max(0, min(2, cpu_count))
+
     print("  Computing FID…")
-    fid_score = fid.compute_fid(real_dir, fake_dir, device=device, verbose=False)
+    fid_score = fid.compute_fid(
+        real_dir,
+        fake_dir,
+        device=device,
+        num_workers=num_workers,
+        verbose=False,
+    )
     print("  Computing KID…")
-    kid_score = fid.compute_kid(real_dir, fake_dir, device=device, verbose=False)
+    kid_score = fid.compute_kid(
+        real_dir,
+        fake_dir,
+        device=device,
+        num_workers=num_workers,
+        verbose=False,
+    )
     fid_kid = {
         "frechet_inception_distance": fid_score,
         "kernel_inception_distance_mean": kid_score,
