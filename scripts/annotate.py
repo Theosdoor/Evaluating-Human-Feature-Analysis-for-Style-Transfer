@@ -18,11 +18,9 @@ Usage
     python3 scripts/annotate.py --cls-dir output/classifications/20260314-195748-5
     # open http://localhost:5000
 
-    Re-run the same command to resume a partially-annotated session.
-
     Optional:
-      --class-target N   Per-class annotation target shown in progress sidebar
-                         (default: 200).  Set to 0 to hide targets.
+      --class-target N   Per-class-per-domain annotation target shown in the
+                         progress tracker (default: 200; set 0 for counts only).
 
 Keys (in browser)
 -----------------
@@ -63,6 +61,19 @@ from src.classification import CLASSES, DEFAULT_CONFIG, render_diagnostic
 ALL_LABELS       = CLASSES + ["bad_extraction"]
 PREFETCH_AHEAD   = 20
 PREFETCH_WORKERS = 2
+
+
+# ---------------------------------------------------------------------------
+# Domain helper
+# ---------------------------------------------------------------------------
+
+def _domain_from_fname(fname):
+    fl = fname.lower()
+    if "mafia" in fl or "game" in fl:
+        return "game"
+    if any(k in fl for k in ("godfather", "irishman", "sopranos", "movie")):
+        return "movie"
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -138,37 +149,66 @@ class Prefetcher:
 class AnnotationState:
     def __init__(self, patches, annotations, json_path, out_dir,
                  diag_cache_dir, class_target=200):
-        self.patches        = patches
-        self.annotations    = annotations
+        self.patches        = patches          # list of (abs_path, rule_label)
+        self.annotations    = annotations      # {fname: {label, source}}
         self.json_path      = json_path
         self.out_dir        = out_dir
         self.diag_cache_dir = diag_cache_dir
         self.class_target   = class_target
 
-        self.all_fnames   = [os.path.basename(p) for p, _ in patches]
         self.fname_to_src = {os.path.basename(p): (p, lbl) for p, lbl in patches}
+        self.all_fnames   = [os.path.basename(p) for p, _ in patches]
 
-        self.queue = [f for f in self.all_fnames if f not in annotations]
+        # All 5 classes active by default
+        self.active_classes = set(CLASSES)
+
+        self.queue = []
         self.idx   = 0
+        self._rebuild_queue()
 
         self.pose_model  = None
         self.prefetcher  = None
 
-    def load_model(self, model_path):
-        from ultralytics import YOLO
-        self.pose_model = YOLO(model_path)
-        self.prefetcher = Prefetcher(self.pose_model, self.diag_cache_dir,
-                                     n_workers=PREFETCH_WORKERS)
+    # ── Queue management ────────────────────────────────────────────────────
+
+    def _rebuild_queue(self):
+        """Rebuild from unannotated patches in active classes. Resets idx."""
+        self.queue = [
+            f for f in self.all_fnames
+            if f not in self.annotations
+            and self.fname_to_src[f][1] in self.active_classes
+        ]
+        self.idx = 0
+
+    def set_filter(self, active_classes):
+        self.active_classes = set(active_classes) & set(CLASSES)
+        self._rebuild_queue()
+        self._schedule_prefetch()
+
+    # ── Properties ──────────────────────────────────────────────────────────
 
     @property
-    def n_total(self):  return len(self.all_fnames)
+    def n_total(self):
+        return sum(
+            1 for f in self.all_fnames
+            if self.fname_to_src[f][1] in self.active_classes
+        )
+
     @property
-    def n_done(self):   return len(self.annotations)
+    def n_done(self):
+        return sum(
+            1 for f in self.annotations
+            if self.fname_to_src.get(f, (None, None))[1] in self.active_classes
+        )
+
     @property
-    def finished(self): return self.idx >= len(self.queue)
+    def finished(self):
+        return self.idx >= len(self.queue)
 
     def current_fname(self):
         return None if self.finished else self.queue[self.idx]
+
+    # ── Actions ─────────────────────────────────────────────────────────────
 
     def accept(self, fname, label, source):
         self.annotations[fname] = {"label": label, "source": source}
@@ -187,8 +227,60 @@ class AnnotationState:
             return prev
         return None
 
+    # ── Stats ────────────────────────────────────────────────────────────────
+
     def class_counts(self):
-        return Counter(entry["label"] for entry in self.annotations.values())
+        """
+        Per-class stats for the tracker.
+
+        Returns dict keyed by label:
+          annotated_game   : int
+          annotated_movie  : int
+          annotated_total  : int
+          remaining        : unannotated patches still in queue for this
+                             rule-based label (0 if class is inactive)
+          target           : int | None
+          active           : bool
+        """
+        ann_game  = Counter()
+        ann_movie = Counter()
+        for fname, entry in self.annotations.items():
+            lbl    = entry["label"]
+            domain = _domain_from_fname(fname)
+            if domain == "game":
+                ann_game[lbl] += 1
+            else:
+                ann_movie[lbl] += 1
+
+        # Remaining in active queue from this point forward
+        remaining_active = Counter(
+            self.fname_to_src[f][1]
+            for f in self.queue[self.idx:]
+        )
+        # Remaining for inactive classes (outside current queue)
+        remaining_inactive = Counter(
+            self.fname_to_src[f][1]
+            for f in self.all_fnames
+            if f not in self.annotations
+            and self.fname_to_src[f][1] not in self.active_classes
+        )
+
+        target = self.class_target if self.class_target > 0 else None
+        result = {}
+        for lbl in ALL_LABELS:
+            is_active = lbl in self.active_classes
+            rem = (remaining_active if is_active else remaining_inactive).get(lbl, 0)
+            result[lbl] = {
+                "annotated_game":  ann_game.get(lbl, 0),
+                "annotated_movie": ann_movie.get(lbl, 0),
+                "annotated_total": ann_game.get(lbl, 0) + ann_movie.get(lbl, 0),
+                "remaining":       rem,
+                "target":          target if lbl != "bad_extraction" else None,
+                "active":          is_active,
+            }
+        return result
+
+    # ── Persistence ─────────────────────────────────────────────────────────
 
     def _save(self):
         os.makedirs(os.path.dirname(self.json_path), exist_ok=True)
@@ -209,6 +301,8 @@ class AnnotationState:
                 shutil.copy2(src_path, dst)
                 copied += 1
         return copied
+
+    # ── Diagnostic cache ─────────────────────────────────────────────────────
 
     def diag_ready(self, fname):
         return os.path.exists(_cache_path(self.diag_cache_dir, fname))
@@ -236,9 +330,15 @@ class AnnotationState:
             items.append((fname, src_path, label))
         self.prefetcher.schedule(items)
 
+    def load_model(self, model_path):
+        from ultralytics import YOLO
+        self.pose_model = YOLO(model_path)
+        self.prefetcher = Prefetcher(self.pose_model, self.diag_cache_dir,
+                                     n_workers=PREFETCH_WORKERS)
+
 
 # ---------------------------------------------------------------------------
-# Global state (single-user local tool)
+# Global state
 # ---------------------------------------------------------------------------
 
 STATE = None
@@ -299,7 +399,6 @@ HTML = r"""
     height: 100%; overflow: hidden;
   }
 
-  /* ── Shell: header | scrollable content | sticky footer ── */
   .shell {
     display: grid;
     grid-template-rows: auto 1fr var(--ctrl-h);
@@ -311,8 +410,7 @@ HTML = r"""
   header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 20px; border-bottom: 1px solid var(--border);
-    background: var(--surface); z-index: 10;
-    flex-shrink: 0;
+    background: var(--surface); z-index: 10; flex-shrink: 0;
   }
   .logo { font-family: var(--sans); font-weight: 800; font-size: 0.95rem; color: var(--accent); }
   .progress-wrap { display: flex; align-items: center; gap: 12px; }
@@ -321,119 +419,146 @@ HTML = r"""
   .progress-bar-inner { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s ease; }
   .fname { font-size: 0.66rem; color: var(--muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* ── Scrollable main content ── */
+  /* ── Scrollable main ── */
   main {
     overflow-y: auto;
     display: flex; flex-direction: column; align-items: center;
-    padding: 16px 20px 8px;
-    gap: 14px;
+    padding: 12px 20px 8px; gap: 10px;
   }
+
+  /* ── Progress tracker ── */
+  .tracker {
+    width: 100%; max-width: 1100px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); padding: 10px 14px;
+    display: flex; flex-direction: column; gap: 6px;
+    flex-shrink: 0;
+  }
+  .tracker-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 2px;
+  }
+  .tracker-title {
+    font-size: 0.60rem; text-transform: uppercase;
+    letter-spacing: 0.10em; color: var(--muted);
+  }
+  .tracker-hint {
+    font-size: 0.58rem; color: var(--muted); font-style: italic;
+  }
+  .tracker-target { font-size: 0.60rem; color: var(--muted); }
+
+  /* cls-row: [toggle btn] [bars block] [done badge] */
+  .cls-row {
+    display: grid;
+    grid-template-columns: 118px 1fr 44px;
+    align-items: center; gap: 8px;
+  }
+
+  .cls-toggle {
+    font-family: var(--mono); font-size: 0.58rem; font-weight: 600;
+    letter-spacing: 0.03em; padding: 3px 7px;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: var(--surface); color: var(--text);
+    cursor: pointer; white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, opacity 0.2s;
+    display: flex; align-items: center; justify-content: space-between; gap: 4px;
+    width: 100%;
+  }
+  .cls-toggle:hover { background: #1e1e24; border-color: #3a3a42; }
+  .cls-toggle.inactive {
+    opacity: 0.35; background: #0a0a0c;
+    border-color: #1a1a1e; color: var(--muted);
+  }
+  .cls-toggle .rem-pill {
+    font-size: 0.52rem; padding: 1px 4px; border-radius: 2px;
+    background: var(--border); color: var(--muted); white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* bars block: stacked game + movie rows */
+  .bars-block { display: flex; flex-direction: column; gap: 2px; }
+  .domain-row {
+    display: grid;
+    grid-template-columns: 32px 1fr 56px;
+    align-items: center; gap: 5px;
+  }
+  .domain-label { font-size: 0.54rem; color: var(--muted); text-align: right; }
+  .bar-outer { height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .bar-inner { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+  .bar-inner.game  { background: #47d4ff; }
+  .bar-inner.movie { background: #b47dff; }
+  .bar-inner.done  { background: #4cda74; }
+  .bar-count { font-size: 0.56rem; color: var(--text); text-align: right; white-space: nowrap; }
+
+  .done-badge {
+    font-size: 0.50rem; font-weight: 700; letter-spacing: 0.08em;
+    padding: 1px 5px; border-radius: 3px;
+    background: #1a3a10; color: #4cda74;
+    visibility: hidden; text-align: center;
+  }
+  .done-badge.visible { visibility: visible; }
 
   /* ── Prediction badge ── */
   .prediction-badge {
-    display: flex; flex-direction: column; align-items: center; gap: 4px;
-    padding: 10px 20px; border: 1px solid var(--border); border-radius: 4px;
-    background: var(--surface); text-align: center; min-width: 260px;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 8px 18px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); text-align: center; min-width: 240px;
   }
   .badge-row { display: flex; align-items: baseline; gap: 8px; }
-  .badge-label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.58rem; }
-  .badge-rule  { color: var(--muted); font-size: 0.72rem; }
-  .badge-current { color: var(--accent2); font-weight: 700; font-size: 1.00rem; letter-spacing: -0.01em; }
-  .badge-divider { width: 100%; height: 1px; background: var(--border); margin: 2px 0; }
+  .badge-label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.56rem; }
+  .badge-rule  { color: var(--muted); font-size: 0.70rem; }
+  .badge-current { color: var(--accent2); font-weight: 700; font-size: 0.95rem; }
+  .badge-divider { width: 100%; height: 1px; background: var(--border); margin: 1px 0; }
 
-  /* ── Image panels ── */
+  /* ── Images ── */
   .img-stack { width: 100%; max-width: 1400px; display: flex; flex-direction: column; gap: 6px; }
   .img-raw {
-    width: 100%; max-height: 140px; object-fit: contain;
+    width: 100%; max-height: 130px; object-fit: contain;
     border: 1px solid var(--border); border-radius: 4px; background: #000;
   }
   .img-diag-wrap {
     width: 100%; border: 1px solid var(--border); border-radius: 4px;
-    overflow: hidden; background: #000; position: relative; min-height: 50px;
+    overflow: hidden; background: #000; position: relative; min-height: 48px;
   }
   .img-diag { width: 100%; height: auto; display: block; opacity: 0; transition: opacity 0.3s; }
   .diag-overlay {
     position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; color: var(--muted); font-size: 0.78rem;
-    letter-spacing: 0.1em; pointer-events: none; transition: opacity 0.3s;
+    justify-content: center; color: var(--muted); font-size: 0.76rem;
+    letter-spacing: 0.1em; pointer-events: none;
   }
   .diag-overlay.hidden { opacity: 0; }
 
-  /* ── Class progress sidebar ── */
-  .cls-progress {
-    width: 100%; max-width: 700px;
-    border: 1px solid var(--border); border-radius: 4px;
-    background: var(--surface); padding: 10px 14px;
-    display: flex; flex-direction: column; gap: 5px;
-  }
-  .cls-progress-title {
-    font-size: 0.60rem; text-transform: uppercase;
-    letter-spacing: 0.10em; color: var(--muted); margin-bottom: 2px;
-  }
-  .cls-row {
-    display: grid;
-    grid-template-columns: 148px 1fr 70px 46px;
-    align-items: center; gap: 7px;
-  }
-  .cls-name  { font-size: 0.63rem; color: var(--muted); white-space: nowrap; }
-  .cls-bar-outer {
-    height: 5px; background: var(--border);
-    border-radius: 3px; overflow: hidden;
-  }
-  .cls-bar-inner {
-    height: 100%; border-radius: 3px;
-    background: var(--accent2);
-    transition: width 0.4s ease;
-  }
-  .cls-bar-inner.done { background: #4cda74; }
-  .cls-count { font-size: 0.63rem; color: var(--text); text-align: right; white-space: nowrap; }
-  .cls-badge {
-    font-size: 0.52rem; font-weight: 700; letter-spacing: 0.08em;
-    padding: 1px 5px; border-radius: 3px;
-    background: #1a3a10; color: #4cda74;
-    visibility: hidden;
-  }
-  .cls-badge.visible { visibility: visible; }
-
-  /* ── Reclassify panel (anchored to sticky bar) ── */
+  /* ── Reclassify panel — floats above sticky bar ── */
   .reclassify-panel {
     display: none; flex-direction: column; gap: 8px;
-    position: absolute;
-    bottom: calc(var(--ctrl-h) + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    width: min(900px, calc(100vw - 40px));
+    position: fixed;
+    bottom: calc(var(--ctrl-h) + 8px); left: 50%; transform: translateX(-50%);
+    width: min(860px, calc(100vw - 40px));
     padding: 12px 14px; border: 1px solid var(--border);
     border-radius: 4px; background: var(--surface);
-    z-index: 25;
+    z-index: 25; box-shadow: 0 -4px 24px rgba(0,0,0,0.7);
   }
   .reclassify-panel.open { display: flex; }
-  .reclassify-title { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .reclassify-title { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
   .cls-btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .cls-btn { justify-content: flex-start; padding: 7px 12px; font-size: 0.70rem; }
   .cls-btn.bad { color: var(--danger); border-color: #3a1a1a; }
   .cls-btn.bad:hover { background: #1e0f0f; }
 
-  /* ── Sticky bottom controls bar ── */
+  /* ── Sticky controls bar ── */
   .controls-bar {
-    position: sticky; bottom: 0; /* belt-and-braces alongside grid row */
     height: var(--ctrl-h);
     display: flex; align-items: center; justify-content: center; gap: 10px;
-    background: var(--surface);
-    border-top: 1px solid var(--border);
-    padding: 0 20px;
-    z-index: 20;
-    flex-shrink: 0;
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding: 0 20px; z-index: 20; flex-shrink: 0;
   }
 
-  /* ── Shared button styles ── */
   button {
     font-family: var(--mono); font-size: 0.76rem; font-weight: 600; letter-spacing: 0.06em;
     padding: 9px 20px; border: 1px solid var(--border); border-radius: 4px;
     background: var(--surface); color: var(--text); cursor: pointer;
     transition: background 0.15s, border-color 0.15s, transform 0.1s;
-    display: flex; align-items: center; gap: 7px;
-    white-space: nowrap;
+    display: flex; align-items: center; gap: 7px; white-space: nowrap;
   }
   button:hover  { background: #1e1e24; border-color: #3a3a42; }
   button:active { transform: scale(0.97); }
@@ -447,16 +572,13 @@ HTML = r"""
     padding: 1px 5px; font-size: 0.64rem; color: var(--muted);
   }
 
-  /* ── Done screen ── */
   .done-screen {
     display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 14px; text-align: center;
-    flex: 1; padding: 40px 0;
+    justify-content: center; gap: 14px; text-align: center; flex: 1; padding: 40px 0;
   }
   .done-title { font-family: var(--sans); font-size: 1.8rem; font-weight: 800; color: var(--accent); }
   .done-sub   { font-size: 0.78rem; color: var(--muted); line-height: 1.7; }
 
-  /* ── Misc ── */
   @keyframes spin { to { transform: rotate(360deg); } }
   .spinner {
     width: 16px; height: 16px; border: 2px solid var(--border);
@@ -479,40 +601,49 @@ HTML = r"""
 <body>
 <div class="shell">
 
-  <!-- ── Header ── -->
   <header>
     <span class="logo">ACV ANNOTATOR</span>
     <div class="progress-wrap">
-      <span class="progress-text">{{ n_done }} / {{ n_total }}</span>
+      <span class="progress-text" id="hdr-progress">{{ n_done }} / {{ n_total }}</span>
       <div class="progress-bar-outer">
-        <div class="progress-bar-inner" style="width:{{ pct }}%"></div>
+        <div class="progress-bar-inner" id="hdr-bar" style="width:{{ pct }}%"></div>
       </div>
     </div>
     <span class="fname">{{ fname or "" }}</span>
   </header>
 
-  <!-- ── Scrollable content ── -->
   <main>
   {% if finished %}
     <div class="done-screen">
       <div class="done-title">All done.</div>
-      <div class="done-sub">{{ n_done }} patches annotated.<br>Click below to write output directories and close the server.</div>
+      <div class="done-sub">{{ n_done }} patches annotated.<br>Click below to write output directories.</div>
     </div>
   {% else %}
-    <div class="prediction-badge">
-      <div class="badge-row">
-        <span class="badge-label">current label</span>
+
+    <!-- Tracker always first in scroll area -->
+    <div class="tracker" id="tracker">
+      <div class="tracker-header">
+        <span class="tracker-title">
+          Annotations per class
+          <span class="tracker-target" id="tracker-target"></span>
+        </span>
+        <span class="tracker-hint">click class name to skip / include</span>
       </div>
+      <!-- rows injected by JS -->
+    </div>
+
+    <div class="prediction-badge">
+      <div class="badge-row"><span class="badge-label">current label</span></div>
       <span class="badge-current" id="current-label">{{ current_label }}</span>
       <div class="badge-divider"></div>
       <div class="badge-row">
         <span class="badge-label">rule-based</span>
-        <span class="badge-rule" id="rule-label">{{ rule_label }}</span>
+        <span class="badge-rule">{{ rule_label }}</span>
       </div>
     </div>
 
     <div class="img-stack">
-      <img class="img-raw" src="/raw/{{ fname }}" alt="raw patch" title="Raw patch">
+      <img class="img-raw" src="/raw/{{ fname }}" alt="raw patch">
       <div class="img-diag-wrap">
         <div class="diag-overlay" id="diag-overlay">
           <div class="spinner"></div>&nbsp;&nbsp;rendering diagnostic...
@@ -522,33 +653,27 @@ HTML = r"""
       </div>
     </div>
 
-    <!-- Per-class progress -->
-    <div class="cls-progress" id="cls-progress">
-      <div class="cls-progress-title">
-        Annotations per class
-        <span style="color:var(--text); font-weight:600" id="cls-target-label"></span>
-      </div>
-    </div>
-
   {% endif %}
   </main>
 
-  <!-- ── Sticky bottom controls bar — always visible ── -->
+  <!-- Reclassify panel — fixed above sticky bar -->
+  <div class="reclassify-panel" id="reclassify-panel">
+    <div class="reclassify-title">Reclassify as</div>
+    <div class="cls-btn-grid">
+      <button class="cls-btn" onclick="reclassify('full_body_front')"><span class="kbd">1</span> full_body_front</button>
+      <button class="cls-btn" onclick="reclassify('full_body_back')"><span class="kbd">2</span> full_body_back</button>
+      <button class="cls-btn" onclick="reclassify('head_shoulder_front')"><span class="kbd">3</span> head_shoulder_front</button>
+      <button class="cls-btn" onclick="reclassify('head_shoulder_back')"><span class="kbd">4</span> head_shoulder_back</button>
+      <button class="cls-btn" onclick="reclassify('others')"><span class="kbd">5</span> others</button>
+      <button class="cls-btn bad" onclick="reclassify('bad_extraction')"><span class="kbd">6</span> bad_extraction</button>
+    </div>
+  </div>
+
+  <!-- Sticky controls bar -->
   <div class="controls-bar">
   {% if finished %}
     <button class="btn-finish" onclick="finish()">Write outputs &amp; exit</button>
   {% else %}
-    <div class="reclassify-panel" id="reclassify-panel">
-      <div class="reclassify-title">Reclassify as</div>
-      <div class="cls-btn-grid">
-        <button class="cls-btn" onclick="reclassify('full_body_front')"><span class="kbd">1</span> full_body_front</button>
-        <button class="cls-btn" onclick="reclassify('full_body_back')"><span class="kbd">2</span> full_body_back</button>
-        <button class="cls-btn" onclick="reclassify('head_shoulder_front')"><span class="kbd">3</span> head_shoulder_front</button>
-        <button class="cls-btn" onclick="reclassify('head_shoulder_back')"><span class="kbd">4</span> head_shoulder_back</button>
-        <button class="cls-btn" onclick="reclassify('others')"><span class="kbd">5</span> others</button>
-        <button class="cls-btn bad" onclick="reclassify('bad_extraction')"><span class="kbd">6</span> bad_extraction</button>
-      </div>
-    </div>
     <button class="btn-accept" onclick="accept()"><span class="kbd">Y</span> Accept</button>
     <button onclick="toggleReclassify()"><span class="kbd">N</span> Reclassify</button>
     <button class="btn-back"   onclick="goBack()"><span class="kbd">B</span> Back</button>
@@ -556,8 +681,7 @@ HTML = r"""
   {% endif %}
   </div>
 
-</div><!-- .shell -->
-
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -566,6 +690,8 @@ const RULE_LABEL   = {{ rule_label | tojson }};
 let   currentLabel = {{ current_label | tojson }};
 let   busy         = false;
 let   pollTimer    = null;
+
+let activeClasses = new Set({{ active_classes | tojson }});
 
 // ── Keyboard shortcuts ──────────────────────────────────────────────────────
 document.addEventListener("keydown", e => {
@@ -587,7 +713,7 @@ document.addEventListener("keydown", e => {
   }
 });
 
-// ── Diagnostic image polling ────────────────────────────────────────────────
+// ── Diagnostic polling ──────────────────────────────────────────────────────
 function startDiagPoll(fname, label) {
   const img     = document.getElementById("diag-img");
   const overlay = document.getElementById("diag-overlay");
@@ -601,8 +727,7 @@ function startDiagPoll(fname, label) {
       .then(d => {
         if (d.ready) {
           img.src = "/diag/" + encodeURIComponent(fname)
-            + "?label=" + encodeURIComponent(label)
-            + "&t=" + Date.now();
+            + "?label=" + encodeURIComponent(label) + "&t=" + Date.now();
         } else {
           pollTimer = setTimeout(tryLoad, 200);
         }
@@ -611,29 +736,23 @@ function startDiagPoll(fname, label) {
   }
   tryLoad();
 }
-
 function diagLoaded() {
-  const img     = document.getElementById("diag-img");
-  const overlay = document.getElementById("diag-overlay");
-  img.style.opacity = "1";
-  if (overlay) overlay.classList.add("hidden");
+  document.getElementById("diag-img").style.opacity = "1";
+  document.getElementById("diag-overlay")?.classList.add("hidden");
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
 }
-
 function diagError() {
-  const overlay = document.getElementById("diag-overlay");
-  if (overlay) overlay.innerHTML = "<span style='color:var(--danger)'>Render failed.</span>";
+  const o = document.getElementById("diag-overlay");
+  if (o) o.innerHTML = "<span style='color:var(--danger)'>Render failed.</span>";
 }
-
 if (FNAME) startDiagPoll(FNAME, currentLabel);
 
-// ── API helpers ─────────────────────────────────────────────────────────────
+// ── POST helper ─────────────────────────────────────────────────────────────
 function post(url, body) {
   if (busy) return Promise.resolve(null);
   busy = true;
   return fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }).then(r => r.json()).finally(() => { busy = false; });
 }
@@ -650,7 +769,6 @@ function reclassify(label) {
   const el = document.getElementById("current-label");
   if (el) el.textContent = label;
   document.getElementById("reclassify-panel").classList.remove("open");
-  // Invalidate cache first, then accept (sequential — busy flag)
   post("/invalidate", { fname: FNAME })
     .then(() => {
       startDiagPoll(FNAME, label);
@@ -679,85 +797,155 @@ function finish() {
   });
 }
 
-function showToast(msg, type) {
-  const t = document.getElementById("toast");
-  t.textContent = msg;
-  t.className = "toast " + type + " show";
-  setTimeout(() => t.classList.remove("show"), 2000);
+// ── Class filter toggle ─────────────────────────────────────────────────────
+function toggleClass(cls) {
+  if (activeClasses.has(cls)) {
+    if (activeClasses.size <= 1) {
+      showToast("At least one class must stay active", "err");
+      return;
+    }
+    activeClasses.delete(cls);
+  } else {
+    activeClasses.add(cls);
+  }
+  // Disable all toggle buttons while request is in-flight
+  document.querySelectorAll(".cls-toggle").forEach(b => b.disabled = true);
+  post("/api/set_filter", { active_classes: [...activeClasses] })
+    .then(d => {
+      if (d?.redirect) window.location = d.redirect;
+      else updateTracker();
+    })
+    .finally(() => {
+      document.querySelectorAll(".cls-toggle").forEach(b => b.disabled = false);
+    });
 }
 
-// ── Per-class progress sidebar ───────────────────────────────────────────────
+// ── Tracker rendering ───────────────────────────────────────────────────────
 const CLS_LABELS = [
   "full_body_front", "full_body_back",
   "head_shoulder_front", "head_shoulder_back",
   "others", "bad_extraction",
 ];
 const CLS_SHORT = {
-  "full_body_front":      "fb_front",
-  "full_body_back":       "fb_back",
-  "head_shoulder_front":  "hs_front",
-  "head_shoulder_back":   "hs_back",
-  "others":               "others",
-  "bad_extraction":       "bad_extr",
+  "full_body_front":     "fb_front",
+  "full_body_back":      "fb_back",
+  "head_shoulder_front": "hs_front",
+  "head_shoulder_back":  "hs_back",
+  "others":              "others",
+  "bad_extraction":      "bad_extr",
 };
 
-function updateClassProgress() {
+function updateTracker() {
   fetch("/api/class_counts")
     .then(r => r.json())
     .then(data => {
-      const container = document.getElementById("cls-progress");
+      const container = document.getElementById("tracker");
       if (!container) return;
 
-      const title = container.querySelector(".cls-progress-title");
+      const header = container.querySelector(".tracker-header");
       container.innerHTML = "";
-      if (title) container.appendChild(title);
+      if (header) container.appendChild(header);
+
+      // Set target label once
+      let targetSet = false;
 
       for (const lbl of CLS_LABELS) {
-        const info   = data[lbl] || { count: 0, target: null };
-        const count  = info.count;
-        const target = info.target;
-        const pct    = target ? Math.min(100, (count / target) * 100) : 0;
-        const done   = target !== null && count >= target;
+        const info   = data[lbl] || {};
+        const gCount = info.annotated_game  || 0;
+        const mCount = info.annotated_movie || 0;
+        const rem    = info.remaining       || 0;
+        const target = info.target          || null;
+        const active = info.active !== false;
 
-        if (target !== null) {
-          const tl = document.getElementById("cls-target-label");
-          if (tl && !tl.textContent) tl.textContent = `(target: ${target})`;
+        if (target !== null && !targetSet) {
+          const tl = document.getElementById("tracker-target");
+          if (tl) { tl.textContent = ` — target: ${target}/domain`; targetSet = true; }
         }
+
+        const pctG  = target ? Math.min(100, gCount / target * 100) : 0;
+        const pctM  = target ? Math.min(100, mCount / target * 100) : 0;
+        const doneG = target !== null && gCount >= target;
+        const doneM = target !== null && mCount >= target;
 
         const row = document.createElement("div");
         row.className = "cls-row";
 
-        const nameEl = document.createElement("span");
-        nameEl.className = "cls-name";
-        nameEl.textContent = CLS_SHORT[lbl] || lbl;
+        // Toggle button
+        const btn = document.createElement("button");
+        btn.className = "cls-toggle" + (active ? "" : " inactive");
+        btn.title     = active ? "Click to skip this class" : "Click to include this class";
+        btn.onclick   = () => toggleClass(lbl);
 
-        const barOuter = document.createElement("div");
-        barOuter.className = "cls-bar-outer";
-        const barInner = document.createElement("div");
-        barInner.className = "cls-bar-inner" + (done ? " done" : "");
-        barInner.style.width = pct.toFixed(1) + "%";
-        barOuter.appendChild(barInner);
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = CLS_SHORT[lbl] || lbl;
 
-        const countEl = document.createElement("span");
-        countEl.className = "cls-count";
-        countEl.textContent = target !== null ? `${count} / ${target}` : `${count}`;
+        const pill = document.createElement("span");
+        pill.className   = "rem-pill";
+        pill.textContent = rem > 0 ? `${rem}` : "0";
 
+        btn.appendChild(nameSpan);
+        btn.appendChild(pill);
+
+        // Bars block
+        const barsBlock = document.createElement("div");
+        barsBlock.className = "bars-block";
+
+        for (const [domainKey, count, pct, done] of [
+          ["game",  gCount, pctG, doneG],
+          ["movie", mCount, pctM, doneM],
+        ]) {
+          const dr = document.createElement("div");
+          dr.className = "domain-row";
+
+          const dl = document.createElement("span");
+          dl.className   = "domain-label";
+          dl.textContent = domainKey;
+
+          const bo = document.createElement("div");
+          bo.className = "bar-outer";
+          const bi = document.createElement("div");
+          bi.className = "bar-inner " + domainKey + (done ? " done" : "");
+          bi.style.width = pct.toFixed(1) + "%";
+          bo.appendChild(bi);
+
+          const bc = document.createElement("span");
+          bc.className   = "bar-count";
+          bc.textContent = target !== null ? `${count}/${target}` : `${count}`;
+
+          dr.appendChild(dl);
+          dr.appendChild(bo);
+          dr.appendChild(bc);
+          barsBlock.appendChild(dr);
+        }
+
+        // Done badge
         const badge = document.createElement("span");
-        badge.className = "cls-badge" + (done ? " visible" : "");
+        badge.className   = "done-badge" + (doneG && doneM ? " visible" : "");
         badge.textContent = "DONE";
 
-        row.appendChild(nameEl);
-        row.appendChild(barOuter);
-        row.appendChild(countEl);
+        row.appendChild(btn);
+        row.appendChild(barsBlock);
         row.appendChild(badge);
         container.appendChild(row);
       }
+
+      // Sync local activeClasses from server truth
+      activeClasses = new Set(
+        CLS_LABELS.filter(l => (data[l]?.active !== false) && l !== "bad_extraction")
+      );
     })
     .catch(() => {});
 }
 
-updateClassProgress();
-setInterval(updateClassProgress, 3000);
+updateTracker();
+setInterval(updateTracker, 3000);
+
+function showToast(msg, type) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast " + type + " show";
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
 </script>
 </body>
 </html>
@@ -779,6 +967,7 @@ def _ctx():
         pct=pct,
         finished=s.finished,
         out_dir=s.out_dir,
+        active_classes=list(s.active_classes),
     )
 
 
@@ -839,17 +1028,16 @@ def back():
 
 @app.route("/api/class_counts")
 def api_class_counts():
-    counts = STATE.class_counts()
-    target = STATE.class_target
-    labels = CLASSES + ["bad_extraction"]
-    data = {
-        lbl: {
-            "count":  counts.get(lbl, 0),
-            "target": target if (target > 0 and lbl != "bad_extraction") else None,
-        }
-        for lbl in labels
-    }
-    return jsonify(data)
+    return jsonify(STATE.class_counts())
+
+
+@app.route("/api/set_filter", methods=["POST"])
+def api_set_filter():
+    data           = request.get_json()
+    active_classes = data.get("active_classes", list(CLASSES))
+    STATE.set_filter(active_classes)
+    fname = STATE.current_fname()
+    return jsonify(redirect="/" if fname is not None else None)
 
 
 @app.route("/finish", methods=["POST"])
@@ -880,8 +1068,8 @@ def main():
     parser.add_argument("--port",         type=int, default=5000)
     parser.add_argument("--host",         default="127.0.0.1")
     parser.add_argument("--class-target", type=int, default=200,
-                        help="Per-class annotation target shown in progress sidebar "
-                             "(default: 200; set 0 to show counts without targets)")
+                        help="Per-class-per-domain annotation target "
+                             "(default: 200; 0 = counts only, no target bars)")
     args = parser.parse_args()
 
     cls_dir  = os.path.abspath(args.cls_dir)
@@ -915,7 +1103,7 @@ def main():
     print(f"  out-dir      : {out_dir}")
     print(f"  diag-cache   : {diag_cache_dir}")
     print(f"  patches      : {STATE.n_total}  (todo: {len(STATE.queue)}  done: {STATE.n_done})")
-    print(f"  class-target : {args.class_target or 'none'}")
+    print(f"  class-target : {args.class_target or 'none (counts only)'}")
     print(f"  prefetch     : next {PREFETCH_AHEAD} images, {PREFETCH_WORKERS} workers")
     print(f"\n  -> http://{args.host}:{args.port}\n")
 
