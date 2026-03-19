@@ -46,6 +46,7 @@ import threading
 from collections import Counter
 
 import cv2
+from tqdm import tqdm
 
 _HERE        = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(_HERE)
@@ -333,8 +334,48 @@ class AnnotationState:
     def load_model(self, model_path):
         from ultralytics import YOLO
         self.pose_model = YOLO(model_path)
+        self._auto_accept_no_pose()
         self.prefetcher = Prefetcher(self.pose_model, self.diag_cache_dir,
                                      n_workers=PREFETCH_WORKERS)
+
+    def _auto_accept_no_pose(self, batch_size=32):
+        """
+        Batch-infer all unannotated patches. Any patch where the pose model
+        returns zero keypoint detections is auto-accepted as 'others' with
+        source 'auto_no_pose' and removed from the annotation queue.
+        """
+        unannotated = [
+            (f, self.fname_to_src[f][0])
+            for f in self.all_fnames
+            if f not in self.annotations
+        ]
+        if not unannotated:
+            return
+
+        skipped = 0
+        paths   = [p for _, p in unannotated]
+        fnames  = [f for f, _ in unannotated]
+
+        for i in tqdm(range(0, len(paths), batch_size), desc="Scanning for no-pose patches"):
+            batch_paths  = paths[i: i + batch_size]
+            batch_fnames = fnames[i: i + batch_size]
+            results      = self.pose_model(batch_paths, verbose=False)
+            for fname, res in zip(batch_fnames, results):
+                no_det = (
+                    res.keypoints is None
+                    or res.keypoints.data.shape[0] == 0
+                )
+                if no_det:
+                    self.annotations[fname] = {
+                        "label":  "bad_extraction",
+                        "source": "auto_no_pose",
+                    }
+                    skipped += 1
+
+        if skipped:
+            self._save()
+            self._rebuild_queue()
+            print(f"  Auto-accepted {skipped} no-pose patches as 'bad_extraction' (excluded from queue).")
 
 
 # ---------------------------------------------------------------------------
