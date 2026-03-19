@@ -510,8 +510,13 @@ function reclassify(label) {
   currentLabel = label;
   document.getElementById("current-label").textContent = label;
   document.getElementById("reclassify-panel").classList.remove("open");
-  post("/invalidate", {fname: FNAME}).then(() => startDiagPoll(FNAME, label));
-  post("/accept", {fname: FNAME, label: label, source: "manual"})
+  // Chain sequentially: invalidate cache first, then accept.
+  // (Cannot fire both in parallel — the `busy` flag would silently drop the second POST.)
+  post("/invalidate", {fname: FNAME})
+    .then(() => {
+      startDiagPoll(FNAME, label);
+      return post("/accept", {fname: FNAME, label: label, source: "manual"});
+    })
     .then(d => {
       showToast("-> " + label, "ok");
       setTimeout(() => { if (d?.redirect) window.location = d.redirect; }, 500);

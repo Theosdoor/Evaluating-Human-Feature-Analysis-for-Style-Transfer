@@ -86,6 +86,12 @@ RELOAD_EXTRACT = "20260314-195748"
 RELOAD_CLS = None
 # RELOAD_CLS = "20260314-195748-3"
 
+# -- 1.2b --
+# Set to a path (relative to project root, or absolute) to an annotations.json produced
+# by scripts/annotate.py. Those manual labels will override the rule-based classification.
+# e.g. RELOAD_ANNOTATIONS = "output/manual_annotated/20260314-195748-5/annotations.json"
+RELOAD_ANNOTATIONS = None
+
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None # skip 1.3
 
@@ -99,6 +105,7 @@ RUN_TRANSLATE_VIDEO = False
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
 reload_extract = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
 reload_cls = None if RUN_FULL_PIPELINE else RELOAD_CLS
+reload_annotations = None if RUN_FULL_PIPELINE else RELOAD_ANNOTATIONS
 
 # %% [markdown]
 # ## 1.1. Human Patch Extraction
@@ -207,6 +214,45 @@ else:
     print(f"Summary saved to {summary_path}")
 
 total_classified = sum(summary.values())
+
+# %% [markdown]
+# ## 1.2b. Apply Manual Annotations (optional)
+
+# %%
+# If a manual annotations.json exists, merge those labels into `results` and `summary`.
+# Patches annotated manually override the rule-based classification.
+if reload_annotations:
+    ann_path = os.path.join(PROJECT_ROOT, reload_annotations) if not os.path.isabs(reload_annotations) else reload_annotations
+    if not os.path.exists(ann_path):
+        print(f"[WARN] annotations file not found: {ann_path}")
+    else:
+        import json
+        with open(ann_path) as _f:
+            _raw_annotations = json.load(_f)
+
+        # _raw_annotations: {fname: {"label": ..., "source": ...}}
+        # Rebuild summary from scratch so counts stay accurate.
+        _overridden = 0
+        ALL_LABELS_SET = set(CLASSES) | {"bad_extraction"}
+        for _fname, _entry in _raw_annotations.items():
+            _label = _entry.get("label")
+            if _label not in ALL_LABELS_SET:
+                print(f"  [WARN] unknown label '{_label}' for {_fname}, skipping")
+                continue
+            _old = results.get(_fname)
+            if _old and _old != _label:
+                summary[_old] = summary.get(_old, 0) - 1
+                _overridden += 1
+            if _label in summary:
+                summary[_label] = summary.get(_label, 0) + (0 if _old == _label else 1)
+            results[_fname] = _label
+
+        total_classified = sum(v for v in summary.values() if v > 0)
+        print(f"Loaded {len(_raw_annotations)} manual annotations from {ann_path}")
+        print(f"  {_overridden} patches had their rule-based label overridden")
+        print("  " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
+else:
+    print("No manual annotations loaded (RELOAD_ANNOTATIONS=None).")
 
 # %% [markdown]
 # ## 1.3 Training Data Selection
