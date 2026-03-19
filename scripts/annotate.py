@@ -20,6 +20,10 @@ Usage
 
     Re-run the same command to resume a partially-annotated session.
 
+    Optional:
+      --class-target N   Per-class annotation target shown in progress sidebar
+                         (default: 200).  Set to 0 to hide targets.
+
 Keys (in browser)
 -----------------
     y / Y          Accept current prediction
@@ -41,6 +45,7 @@ import queue
 import shutil
 import sys
 import threading
+from collections import Counter
 
 import cv2
 
@@ -56,20 +61,19 @@ from src.classification import CLASSES, DEFAULT_CONFIG, render_diagnostic
 # ---------------------------------------------------------------------------
 
 ALL_LABELS       = CLASSES + ["bad_extraction"]
-PREFETCH_AHEAD   = 20   # images ahead to pre-render
-PREFETCH_WORKERS = 2    # parallel render threads
+PREFETCH_AHEAD   = 20
+PREFETCH_WORKERS = 2
 
 
 # ---------------------------------------------------------------------------
 # Diagnostic cache helpers
 # ---------------------------------------------------------------------------
 
-def _cache_path(diag_cache_dir: str, fname: str) -> str:
+def _cache_path(diag_cache_dir, fname):
     return os.path.join(diag_cache_dir, fname + ".jpg")
 
 
 def _render_and_cache(pose_model, src_path, label, diag_cache_dir, cfg=DEFAULT_CONFIG):
-    """Run YOLO-pose + render_diagnostic, write to cache. Returns cache path or None."""
     img_bgr = cv2.imread(src_path)
     if img_bgr is None:
         return None
@@ -90,11 +94,6 @@ def _render_and_cache(pose_model, src_path, label, diag_cache_dir, cfg=DEFAULT_C
 # ---------------------------------------------------------------------------
 
 class Prefetcher:
-    """
-    Background thread pool that pre-renders diagnostics for upcoming images.
-    Skips items already cached or already in-flight.
-    """
-
     def __init__(self, pose_model, diag_cache_dir, n_workers=2):
         self.pose_model     = pose_model
         self.diag_cache_dir = diag_cache_dir
@@ -112,7 +111,6 @@ class Prefetcher:
             self._q.put(None)
 
     def schedule(self, items):
-        """items: list of (fname, src_path, label)."""
         for fname, src_path, label in items:
             cp = _cache_path(self.diag_cache_dir, fname)
             with self._lock:
@@ -138,12 +136,14 @@ class Prefetcher:
 # ---------------------------------------------------------------------------
 
 class AnnotationState:
-    def __init__(self, patches, annotations, json_path, out_dir, diag_cache_dir):
-        self.patches        = patches   # list of (abs_path, rule_label)
+    def __init__(self, patches, annotations, json_path, out_dir,
+                 diag_cache_dir, class_target=200):
+        self.patches        = patches
         self.annotations    = annotations
         self.json_path      = json_path
         self.out_dir        = out_dir
         self.diag_cache_dir = diag_cache_dir
+        self.class_target   = class_target
 
         self.all_fnames   = [os.path.basename(p) for p, _ in patches]
         self.fname_to_src = {os.path.basename(p): (p, lbl) for p, lbl in patches}
@@ -186,6 +186,9 @@ class AnnotationState:
             self._schedule_prefetch()
             return prev
         return None
+
+    def class_counts(self):
+        return Counter(entry["label"] for entry in self.annotations.values())
 
     def _save(self):
         os.makedirs(os.path.dirname(self.json_path), exist_ok=True)
@@ -288,52 +291,144 @@ HTML = r"""
     --accent: #e8ff47; --accent2: #47d4ff; --danger: #ff4757;
     --text: #e8e8ec; --muted: #6b6b78;
     --mono: "JetBrains Mono", monospace; --sans: "Syne", sans-serif;
+    --ctrl-h: 56px;
   }
-  html, body { background: var(--bg); color: var(--text); font-family: var(--mono); min-height: 100vh; }
-  .shell { display: grid; grid-template-rows: auto 1fr auto; min-height: 100vh; }
+
+  html, body {
+    background: var(--bg); color: var(--text); font-family: var(--mono);
+    height: 100%; overflow: hidden;
+  }
+
+  /* ── Shell: header | scrollable content | sticky footer ── */
+  .shell {
+    display: grid;
+    grid-template-rows: auto 1fr var(--ctrl-h);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
   header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 28px; border-bottom: 1px solid var(--border);
-    background: var(--surface); position: sticky; top: 0; z-index: 10;
+    padding: 10px 20px; border-bottom: 1px solid var(--border);
+    background: var(--surface); z-index: 10;
+    flex-shrink: 0;
   }
-  .logo { font-family: var(--sans); font-weight: 800; font-size: 1rem; color: var(--accent); }
-  .progress-wrap { display: flex; align-items: center; gap: 14px; }
-  .progress-text { font-size: 0.72rem; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
-  .progress-bar-outer { width: 180px; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .logo { font-family: var(--sans); font-weight: 800; font-size: 0.95rem; color: var(--accent); }
+  .progress-wrap { display: flex; align-items: center; gap: 12px; }
+  .progress-text { font-size: 0.70rem; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+  .progress-bar-outer { width: 160px; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
   .progress-bar-inner { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s ease; }
-  .fname { font-size: 0.7rem; color: var(--muted); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  main { display: flex; flex-direction: column; align-items: center; padding: 24px 28px; gap: 20px; }
+  .fname { font-size: 0.66rem; color: var(--muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Scrollable main content ── */
+  main {
+    overflow-y: auto;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 16px 20px 8px;
+    gap: 14px;
+  }
+
+  /* ── Prediction badge ── */
   .prediction-badge {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
-    padding: 12px 24px; border: 1px solid var(--border); border-radius: 4px;
-    background: var(--surface); text-align: center; min-width: 280px;
+    padding: 10px 20px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); text-align: center; min-width: 260px;
   }
   .badge-row { display: flex; align-items: baseline; gap: 8px; }
-  .badge-label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.60rem; }
-  .badge-rule  { color: var(--muted); font-size: 0.75rem; }
-  .badge-current { color: var(--accent2); font-weight: 700; font-size: 1.05rem; letter-spacing: -0.01em; }
+  .badge-label { color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.58rem; }
+  .badge-rule  { color: var(--muted); font-size: 0.72rem; }
+  .badge-current { color: var(--accent2); font-weight: 700; font-size: 1.00rem; letter-spacing: -0.01em; }
   .badge-divider { width: 100%; height: 1px; background: var(--border); margin: 2px 0; }
-  .img-stack { width: 100%; max-width: 1400px; display: flex; flex-direction: column; gap: 8px; }
-  .img-raw { width: 100%; max-height: 180px; object-fit: contain; border: 1px solid var(--border); border-radius: 6px; background: #000; }
+
+  /* ── Image panels ── */
+  .img-stack { width: 100%; max-width: 1400px; display: flex; flex-direction: column; gap: 6px; }
+  .img-raw {
+    width: 100%; max-height: 140px; object-fit: contain;
+    border: 1px solid var(--border); border-radius: 4px; background: #000;
+  }
   .img-diag-wrap {
-    width: 100%; border: 1px solid var(--border); border-radius: 6px;
-    overflow: hidden; background: #000; position: relative; min-height: 60px;
+    width: 100%; border: 1px solid var(--border); border-radius: 4px;
+    overflow: hidden; background: #000; position: relative; min-height: 50px;
   }
   .img-diag { width: 100%; height: auto; display: block; opacity: 0; transition: opacity 0.3s; }
   .diag-overlay {
     position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; color: var(--muted); font-size: 0.8rem;
+    justify-content: center; color: var(--muted); font-size: 0.78rem;
     letter-spacing: 0.1em; pointer-events: none; transition: opacity 0.3s;
   }
   .diag-overlay.hidden { opacity: 0; }
-  .controls { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; max-width: 700px; }
-  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+  /* ── Class progress sidebar ── */
+  .cls-progress {
+    width: 100%; max-width: 700px;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); padding: 10px 14px;
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  .cls-progress-title {
+    font-size: 0.60rem; text-transform: uppercase;
+    letter-spacing: 0.10em; color: var(--muted); margin-bottom: 2px;
+  }
+  .cls-row {
+    display: grid;
+    grid-template-columns: 148px 1fr 70px 46px;
+    align-items: center; gap: 7px;
+  }
+  .cls-name  { font-size: 0.63rem; color: var(--muted); white-space: nowrap; }
+  .cls-bar-outer {
+    height: 5px; background: var(--border);
+    border-radius: 3px; overflow: hidden;
+  }
+  .cls-bar-inner {
+    height: 100%; border-radius: 3px;
+    background: var(--accent2);
+    transition: width 0.4s ease;
+  }
+  .cls-bar-inner.done { background: #4cda74; }
+  .cls-count { font-size: 0.63rem; color: var(--text); text-align: right; white-space: nowrap; }
+  .cls-badge {
+    font-size: 0.52rem; font-weight: 700; letter-spacing: 0.08em;
+    padding: 1px 5px; border-radius: 3px;
+    background: #1a3a10; color: #4cda74;
+    visibility: hidden;
+  }
+  .cls-badge.visible { visibility: visible; }
+
+  /* ── Reclassify panel (inline, above sticky bar) ── */
+  .reclassify-panel {
+    display: none; flex-direction: column; gap: 8px;
+    width: 100%; max-width: 700px;
+    padding: 12px 14px; border: 1px solid var(--border);
+    border-radius: 4px; background: var(--surface);
+  }
+  .reclassify-panel.open { display: flex; }
+  .reclassify-title { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .cls-btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .cls-btn { justify-content: flex-start; padding: 7px 12px; font-size: 0.70rem; }
+  .cls-btn.bad { color: var(--danger); border-color: #3a1a1a; }
+  .cls-btn.bad:hover { background: #1e0f0f; }
+
+  /* ── Sticky bottom controls bar ── */
+  .controls-bar {
+    position: sticky; bottom: 0; /* belt-and-braces alongside grid row */
+    height: var(--ctrl-h);
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 0 20px;
+    z-index: 20;
+    flex-shrink: 0;
+  }
+
+  /* ── Shared button styles ── */
   button {
-    font-family: var(--mono); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.06em;
-    padding: 10px 22px; border: 1px solid var(--border); border-radius: 4px;
+    font-family: var(--mono); font-size: 0.76rem; font-weight: 600; letter-spacing: 0.06em;
+    padding: 9px 20px; border: 1px solid var(--border); border-radius: 4px;
     background: var(--surface); color: var(--text); cursor: pointer;
     transition: background 0.15s, border-color 0.15s, transform 0.1s;
-    display: flex; align-items: center; gap: 8px;
+    display: flex; align-items: center; gap: 7px;
+    white-space: nowrap;
   }
   button:hover  { background: #1e1e24; border-color: #3a3a42; }
   button:active { transform: scale(0.97); }
@@ -342,24 +437,35 @@ HTML = r"""
   .btn-back   { color: var(--muted); }
   .btn-finish { color: var(--danger); border-color: #3a1a1a; }
   .btn-finish:hover { background: #1e0f0f; border-color: var(--danger); }
-  .kbd { display: inline-block; background: var(--border); border-radius: 3px; padding: 1px 6px; font-size: 0.68rem; color: var(--muted); }
-  .reclassify-panel {
-    display: none; flex-direction: column; gap: 10px; width: 100%;
-    padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+  .kbd {
+    display: inline-block; background: var(--border); border-radius: 3px;
+    padding: 1px 5px; font-size: 0.64rem; color: var(--muted);
   }
-  .reclassify-panel.open { display: flex; }
-  .reclassify-title { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
-  .cls-btn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .cls-btn { justify-content: flex-start; padding: 9px 14px; font-size: 0.73rem; }
-  .cls-btn.bad { color: var(--danger); border-color: #3a1a1a; }
-  .cls-btn.bad:hover { background: #1e0f0f; }
-  .done-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; min-height: 60vh; text-align: center; }
-  .done-title  { font-family: var(--sans); font-size: 2rem; font-weight: 800; color: var(--accent); }
-  .done-sub    { font-size: 0.8rem; color: var(--muted); line-height: 1.7; }
-  footer { padding: 10px 28px; border-top: 1px solid var(--border); font-size: 0.65rem; color: var(--muted); display: flex; justify-content: space-between; }
+
+  /* ── Done screen ── */
+  .done-screen {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; text-align: center;
+    flex: 1; padding: 40px 0;
+  }
+  .done-title { font-family: var(--sans); font-size: 1.8rem; font-weight: 800; color: var(--accent); }
+  .done-sub   { font-size: 0.78rem; color: var(--muted); line-height: 1.7; }
+
+  /* ── Misc ── */
   @keyframes spin { to { transform: rotate(360deg); } }
-  .spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
-  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 10px 18px; font-size: 0.75rem; opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 100; }
+  .spinner {
+    width: 16px; height: 16px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  .toast {
+    position: fixed; bottom: calc(var(--ctrl-h) + 10px); right: 20px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 8px 16px; font-size: 0.73rem;
+    opacity: 0; transform: translateY(6px);
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none; z-index: 100;
+  }
   .toast.show { opacity: 1; transform: translateY(0); }
   .toast.ok  { border-color: #3a5200; color: var(--accent); }
   .toast.err { border-color: #3a1a1a; color: var(--danger); }
@@ -367,52 +473,60 @@ HTML = r"""
 </head>
 <body>
 <div class="shell">
-<header>
-  <span class="logo">ACV ANNOTATOR</span>
-  <div class="progress-wrap">
-    <span class="progress-text">{{ n_done }} / {{ n_total }}</span>
-    <div class="progress-bar-outer">
-      <div class="progress-bar-inner" style="width:{{ pct }}%"></div>
-    </div>
-  </div>
-  <span class="fname">{{ fname or "" }}</span>
-</header>
-<main>
-{% if finished %}
-  <div class="done-screen">
-    <div class="done-title">All done.</div>
-    <div class="done-sub">{{ n_done }} patches annotated.<br>Click below to write output directories and close the server.</div>
-    <button class="btn-finish" onclick="finish()">Write outputs &amp; exit</button>
-  </div>
-{% else %}
-  <div class="prediction-badge">
-    <div class="badge-row">
-      <span class="badge-label">current label</span>
-    </div>
-    <span class="badge-current" id="current-label">{{ current_label }}</span>
-    <div class="badge-divider"></div>
-    <div class="badge-row">
-      <span class="badge-label">rule-based</span>
-      <span class="badge-rule" id="rule-label">{{ rule_label }}</span>
-    </div>
-  </div>
-  <div class="img-stack">
-    <img class="img-raw" src="/raw/{{ fname }}" alt="raw patch" title="Raw patch — loads instantly">
-    <div class="img-diag-wrap">
-      <div class="diag-overlay" id="diag-overlay">
-        <div class="spinner"></div>&nbsp;&nbsp;rendering diagnostic...
+
+  <!-- ── Header ── -->
+  <header>
+    <span class="logo">ACV ANNOTATOR</span>
+    <div class="progress-wrap">
+      <span class="progress-text">{{ n_done }} / {{ n_total }}</span>
+      <div class="progress-bar-outer">
+        <div class="progress-bar-inner" style="width:{{ pct }}%"></div>
       </div>
-      <img class="img-diag" id="diag-img" src="" alt="diagnostic"
-           onload="diagLoaded()" onerror="diagError()">
     </div>
-  </div>
-  <div class="controls">
-    <div class="btn-row">
-      <button class="btn-accept" onclick="accept()"><span class="kbd">Y</span> Accept</button>
-      <button onclick="toggleReclassify()"><span class="kbd">N</span> Reclassify</button>
-      <button class="btn-back"   onclick="goBack()"><span class="kbd">B</span> Back</button>
-      <button class="btn-finish" onclick="finish()"><span class="kbd">Q</span> Save &amp; exit</button>
+    <span class="fname">{{ fname or "" }}</span>
+  </header>
+
+  <!-- ── Scrollable content ── -->
+  <main>
+  {% if finished %}
+    <div class="done-screen">
+      <div class="done-title">All done.</div>
+      <div class="done-sub">{{ n_done }} patches annotated.<br>Click below to write output directories and close the server.</div>
     </div>
+  {% else %}
+    <div class="prediction-badge">
+      <div class="badge-row">
+        <span class="badge-label">current label</span>
+      </div>
+      <span class="badge-current" id="current-label">{{ current_label }}</span>
+      <div class="badge-divider"></div>
+      <div class="badge-row">
+        <span class="badge-label">rule-based</span>
+        <span class="badge-rule" id="rule-label">{{ rule_label }}</span>
+      </div>
+    </div>
+
+    <div class="img-stack">
+      <img class="img-raw" src="/raw/{{ fname }}" alt="raw patch" title="Raw patch">
+      <div class="img-diag-wrap">
+        <div class="diag-overlay" id="diag-overlay">
+          <div class="spinner"></div>&nbsp;&nbsp;rendering diagnostic...
+        </div>
+        <img class="img-diag" id="diag-img" src="" alt="diagnostic"
+             onload="diagLoaded()" onerror="diagError()">
+      </div>
+    </div>
+
+    <!-- Per-class progress -->
+    <div class="cls-progress" id="cls-progress">
+      <div class="cls-progress-title">
+        Annotations per class
+        <span style="color:var(--text); font-weight:600" id="cls-target-label"></span>
+      </div>
+    </div>
+
+    <!-- Reclassify panel lives here so it scrolls with content,
+         above the sticky bar -->
     <div class="reclassify-panel" id="reclassify-panel">
       <div class="reclassify-title">Reclassify as</div>
       <div class="cls-btn-grid">
@@ -424,15 +538,26 @@ HTML = r"""
         <button class="cls-btn bad" onclick="reclassify('bad_extraction')"><span class="kbd">6</span> bad_extraction</button>
       </div>
     </div>
+
+  {% endif %}
+  </main>
+
+  <!-- ── Sticky bottom controls bar — always visible ── -->
+  <div class="controls-bar">
+  {% if finished %}
+    <button class="btn-finish" onclick="finish()">Write outputs &amp; exit</button>
+  {% else %}
+    <button class="btn-accept" onclick="accept()"><span class="kbd">Y</span> Accept</button>
+    <button onclick="toggleReclassify()"><span class="kbd">N</span> Reclassify</button>
+    <button class="btn-back"   onclick="goBack()"><span class="kbd">B</span> Back</button>
+    <button class="btn-finish" onclick="finish()"><span class="kbd">Q</span> Save &amp; exit</button>
+  {% endif %}
   </div>
-{% endif %}
-</main>
-<footer>
-  <span>output: {{ out_dir }}</span>
-  <span>annotations.json saved on every action | cache in cls-dir/.diag_cache/</span>
-</footer>
-</div>
+
+</div><!-- .shell -->
+
 <div class="toast" id="toast"></div>
+
 <script>
 const FNAME        = {{ fname | tojson }};
 const RULE_LABEL   = {{ rule_label | tojson }};
@@ -440,12 +565,16 @@ let   currentLabel = {{ current_label | tojson }};
 let   busy         = false;
 let   pollTimer    = null;
 
+// ── Keyboard shortcuts ──────────────────────────────────────────────────────
 document.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
   const open = document.getElementById("reclassify-panel")?.classList.contains("open");
   if (open) {
-    const map = {"1":"full_body_front","2":"full_body_back","3":"head_shoulder_front",
-                 "4":"head_shoulder_back","5":"others","6":"bad_extraction"};
+    const map = {
+      "1": "full_body_front", "2": "full_body_back",
+      "3": "head_shoulder_front", "4": "head_shoulder_back",
+      "5": "others", "6": "bad_extraction",
+    };
     if (map[e.key]) { reclassify(map[e.key]); return; }
     if (e.key === "Escape" || e.key.toLowerCase() === "n") toggleReclassify();
   } else {
@@ -456,6 +585,7 @@ document.addEventListener("keydown", e => {
   }
 });
 
+// ── Diagnostic image polling ────────────────────────────────────────────────
 function startDiagPoll(fname, label) {
   const img     = document.getElementById("diag-img");
   const overlay = document.getElementById("diag-overlay");
@@ -468,7 +598,9 @@ function startDiagPoll(fname, label) {
       .then(r => r.json())
       .then(d => {
         if (d.ready) {
-          img.src = "/diag/" + encodeURIComponent(fname) + "?label=" + encodeURIComponent(label) + "&t=" + Date.now();
+          img.src = "/diag/" + encodeURIComponent(fname)
+            + "?label=" + encodeURIComponent(label)
+            + "&t=" + Date.now();
         } else {
           pollTimer = setTimeout(tryLoad, 200);
         }
@@ -479,7 +611,7 @@ function startDiagPoll(fname, label) {
 }
 
 function diagLoaded() {
-  const img = document.getElementById("diag-img");
+  const img     = document.getElementById("diag-img");
   const overlay = document.getElementById("diag-overlay");
   img.style.opacity = "1";
   if (overlay) overlay.classList.add("hidden");
@@ -493,29 +625,34 @@ function diagError() {
 
 if (FNAME) startDiagPoll(FNAME, currentLabel);
 
+// ── API helpers ─────────────────────────────────────────────────────────────
 function post(url, body) {
   if (busy) return Promise.resolve(null);
   busy = true;
-  return fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)})
-    .then(r => r.json()).finally(() => { busy = false; });
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).finally(() => { busy = false; });
 }
 
+// ── Actions ─────────────────────────────────────────────────────────────────
 function accept() {
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-  post("/accept", {fname: FNAME, label: currentLabel})
+  post("/accept", { fname: FNAME, label: currentLabel })
     .then(d => { if (d?.redirect) window.location = d.redirect; });
 }
 
 function reclassify(label) {
   currentLabel = label;
-  document.getElementById("current-label").textContent = label;
+  const el = document.getElementById("current-label");
+  if (el) el.textContent = label;
   document.getElementById("reclassify-panel").classList.remove("open");
-  // Chain sequentially: invalidate cache first, then accept.
-  // (Cannot fire both in parallel — the `busy` flag would silently drop the second POST.)
-  post("/invalidate", {fname: FNAME})
+  // Invalidate cache first, then accept (sequential — busy flag)
+  post("/invalidate", { fname: FNAME })
     .then(() => {
       startDiagPoll(FNAME, label);
-      return post("/accept", {fname: FNAME, label: label, source: "manual"});
+      return post("/accept", { fname: FNAME, label: label, source: "manual" });
     })
     .then(d => {
       showToast("-> " + label, "ok");
@@ -542,9 +679,83 @@ function finish() {
 
 function showToast(msg, type) {
   const t = document.getElementById("toast");
-  t.textContent = msg; t.className = "toast " + type + " show";
+  t.textContent = msg;
+  t.className = "toast " + type + " show";
   setTimeout(() => t.classList.remove("show"), 2000);
 }
+
+// ── Per-class progress sidebar ───────────────────────────────────────────────
+const CLS_LABELS = [
+  "full_body_front", "full_body_back",
+  "head_shoulder_front", "head_shoulder_back",
+  "others", "bad_extraction",
+];
+const CLS_SHORT = {
+  "full_body_front":      "fb_front",
+  "full_body_back":       "fb_back",
+  "head_shoulder_front":  "hs_front",
+  "head_shoulder_back":   "hs_back",
+  "others":               "others",
+  "bad_extraction":       "bad_extr",
+};
+
+function updateClassProgress() {
+  fetch("/api/class_counts")
+    .then(r => r.json())
+    .then(data => {
+      const container = document.getElementById("cls-progress");
+      if (!container) return;
+
+      const title = container.querySelector(".cls-progress-title");
+      container.innerHTML = "";
+      if (title) container.appendChild(title);
+
+      for (const lbl of CLS_LABELS) {
+        const info   = data[lbl] || { count: 0, target: null };
+        const count  = info.count;
+        const target = info.target;
+        const pct    = target ? Math.min(100, (count / target) * 100) : 0;
+        const done   = target !== null && count >= target;
+
+        if (target !== null) {
+          const tl = document.getElementById("cls-target-label");
+          if (tl && !tl.textContent) tl.textContent = `(target: ${target})`;
+        }
+
+        const row = document.createElement("div");
+        row.className = "cls-row";
+
+        const nameEl = document.createElement("span");
+        nameEl.className = "cls-name";
+        nameEl.textContent = CLS_SHORT[lbl] || lbl;
+
+        const barOuter = document.createElement("div");
+        barOuter.className = "cls-bar-outer";
+        const barInner = document.createElement("div");
+        barInner.className = "cls-bar-inner" + (done ? " done" : "");
+        barInner.style.width = pct.toFixed(1) + "%";
+        barOuter.appendChild(barInner);
+
+        const countEl = document.createElement("span");
+        countEl.className = "cls-count";
+        countEl.textContent = target !== null ? `${count} / ${target}` : `${count}`;
+
+        const badge = document.createElement("span");
+        badge.className = "cls-badge" + (done ? " visible" : "");
+        badge.textContent = "DONE";
+
+        row.appendChild(nameEl);
+        row.appendChild(barOuter);
+        row.appendChild(countEl);
+        row.appendChild(badge);
+        container.appendChild(row);
+      }
+    })
+    .catch(() => {});
+}
+
+updateClassProgress();
+setInterval(updateClassProgress, 3000);
 </script>
 </body>
 </html>
@@ -557,9 +768,16 @@ def _ctx():
     rule_label  = s.fname_to_src[fname][1] if fname else ""
     current_lbl = s.annotations.get(fname, {}).get("label", rule_label) if fname else ""
     pct         = round(s.n_done / s.n_total * 100, 1) if s.n_total else 0
-    return dict(fname=fname, rule_label=rule_label, current_label=current_lbl,
-                n_done=s.n_done, n_total=s.n_total, pct=pct,
-                finished=s.finished, out_dir=s.out_dir)
+    return dict(
+        fname=fname,
+        rule_label=rule_label,
+        current_label=current_lbl,
+        n_done=s.n_done,
+        n_total=s.n_total,
+        pct=pct,
+        finished=s.finished,
+        out_dir=s.out_dir,
+    )
 
 
 @app.route("/")
@@ -595,7 +813,10 @@ def accept():
     data   = request.get_json()
     fname  = data["fname"]
     label  = data["label"]
-    source = data.get("source", "auto" if label == STATE.fname_to_src[fname][1] else "manual")
+    source = data.get(
+        "source",
+        "auto" if label == STATE.fname_to_src[fname][1] else "manual",
+    )
     STATE.accept(fname, label, source)
     return jsonify(redirect="/")
 
@@ -614,37 +835,60 @@ def back():
     return jsonify(redirect="/")
 
 
+@app.route("/api/class_counts")
+def api_class_counts():
+    counts = STATE.class_counts()
+    target = STATE.class_target
+    labels = CLASSES + ["bad_extraction"]
+    data = {
+        lbl: {
+            "count":  counts.get(lbl, 0),
+            "target": target if (target > 0 and lbl != "bad_extraction") else None,
+        }
+        for lbl in labels
+    }
+    return jsonify(data)
+
+
 @app.route("/finish", methods=["POST"])
 def finish():
     if STATE.prefetcher:
         STATE.prefetcher.stop()
     STATE._save()
     copied = STATE.write_output_dirs()
-    msg    = f"Saved {STATE.n_done} annotations. Wrote {copied} files."
+    msg = f"Saved {STATE.n_done} annotations. Wrote {copied} files."
     print(f"\n{msg}\nAnnotations -> {STATE.json_path}\nOutput dirs -> {STATE.out_dir}")
+
     def _shutdown():
         import time, signal
         time.sleep(1.2)
         os.kill(os.getpid(), signal.SIGTERM)
+
     threading.Thread(target=_shutdown, daemon=True).start()
     return jsonify(message=msg, redirect="/")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Flask annotation tool for human patch labelling.")
-    parser.add_argument("--cls-dir",    required=True)
-    parser.add_argument("--out-dir",    default=None)
-    parser.add_argument("--pose-model", default=None)
-    parser.add_argument("--port",       type=int, default=5000)
-    parser.add_argument("--host",       default="127.0.0.1")
+    parser = argparse.ArgumentParser(
+        description="Flask annotation tool for human patch labelling."
+    )
+    parser.add_argument("--cls-dir",      required=True)
+    parser.add_argument("--out-dir",      default=None)
+    parser.add_argument("--pose-model",   default=None)
+    parser.add_argument("--port",         type=int, default=5000)
+    parser.add_argument("--host",         default="127.0.0.1")
+    parser.add_argument("--class-target", type=int, default=200,
+                        help="Per-class annotation target shown in progress sidebar "
+                             "(default: 200; set 0 to show counts without targets)")
     args = parser.parse_args()
 
     cls_dir  = os.path.abspath(args.cls_dir)
     run_name = os.path.basename(os.path.normpath(cls_dir))
-    out_dir  = (os.path.abspath(args.out_dir) if args.out_dir
-                else os.path.join(PROJECT_ROOT, "output", "manual_annotated", run_name))
-    pose_model = (args.pose_model
-                  or os.path.join(PROJECT_ROOT, "models", "yolo26m-pose.pt"))
+    out_dir  = (
+        os.path.abspath(args.out_dir) if args.out_dir
+        else os.path.join(PROJECT_ROOT, "output", "manual_annotated", run_name)
+    )
+    pose_model = args.pose_model or os.path.join(PROJECT_ROOT, "models", "yolo26m-pose.pt")
 
     if not os.path.isdir(cls_dir):
         print(f"Error: cls-dir not found: {cls_dir}"); sys.exit(1)
@@ -657,16 +901,20 @@ def main():
     diag_cache_dir = os.path.join(cls_dir, ".diag_cache")
 
     global STATE
-    STATE = AnnotationState(patches, annotations, json_path, out_dir, diag_cache_dir)
+    STATE = AnnotationState(
+        patches, annotations, json_path, out_dir, diag_cache_dir,
+        class_target=args.class_target,
+    )
     STATE.load_model(pose_model)
     STATE._schedule_prefetch()
 
     print(f"\nACV Annotator")
-    print(f"  cls-dir    : {cls_dir}")
-    print(f"  out-dir    : {out_dir}")
-    print(f"  diag-cache : {diag_cache_dir}")
-    print(f"  patches    : {STATE.n_total}  (todo: {len(STATE.queue)}  done: {STATE.n_done})")
-    print(f"  prefetch   : next {PREFETCH_AHEAD} images, {PREFETCH_WORKERS} workers")
+    print(f"  cls-dir      : {cls_dir}")
+    print(f"  out-dir      : {out_dir}")
+    print(f"  diag-cache   : {diag_cache_dir}")
+    print(f"  patches      : {STATE.n_total}  (todo: {len(STATE.queue)}  done: {STATE.n_done})")
+    print(f"  class-target : {args.class_target or 'none'}")
+    print(f"  prefetch     : next {PREFETCH_AHEAD} images, {PREFETCH_WORKERS} workers")
     print(f"\n  -> http://{args.host}:{args.port}\n")
 
     app.run(host=args.host, port=args.port, debug=False, threaded=True)

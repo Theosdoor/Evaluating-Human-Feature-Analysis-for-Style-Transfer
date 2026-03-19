@@ -234,36 +234,39 @@ def classify_keypoints(
 # Deep diagnostic rendering  (used by classify_directory and annotate.py)
 # ---------------------------------------------------------------------------
 
-# CV2 drawing constants
-_BG        = (18,  18,  22)    # dark background
-_WHITE     = (220, 220, 228)
-_MUTED     = (100, 100, 110)
-_GREEN     = (80,  220, 80)    # PASS / above face_conf
-_GOLD      = (40,  200, 220)   # above back_conf
-_RED_BGR   = (70,  70,  240)   # FAIL / below back_conf
-_ORANGE    = (40,  160, 230)   # 'others' verdict
-_BLUE      = (220, 140, 60)    # secondary detections
-_ACCENT    = (70,  255, 230)   # accent (yellow-green)
+# Colour palette  (BGR)
+_BG        = (246, 244, 244)   # light warm white  — panel background
+_SURFACE   = (255, 255, 255)   # pure white        — crop panel
+_SEP       = (210, 208, 208)   # mid-grey          — panel dividers
+_TEXT      = (40,  38,  38)    # near-black        — primary text
+_MUTED     = (140, 136, 136)   # mid-grey          — secondary text
+_GREEN     = (60,  170,  60)   # limegreen-ish
+_GOLD      = (30,  165, 200)   # gold/amber
+_RED       = (70,   70, 220)   # tomato-ish
+_PASS_BG   = (210, 240, 210)   # light green tint  — PASS cell bg
+_FAIL_BG   = (210, 215, 248)   # light red tint    — FAIL cell bg
+_ACCENT    = (160,  80,  30)   # deep blue-teal    — verdict colour
+_OTHERS    = (40,  120, 220)   # orange            — 'others' verdict
 
 # COCO skeleton edges for drawing limbs
 _SKELETON = [
-    (0,1),(0,2),(1,3),(2,4),          # face
-    (5,6),(5,7),(7,9),(6,8),(8,10),   # arms
-    (5,11),(6,12),(11,12),            # torso
-    (11,13),(13,15),(12,14),(14,16),  # legs
+    (0, 1), (0, 2), (1, 3), (2, 4),
+    (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
+    (5, 11), (6, 12), (11, 12),
+    (11, 13), (13, 15), (12, 14), (14, 16),
 ]
 
-_FONT      = cv2.FONT_HERSHEY_SIMPLEX
-_FONT_MONO = cv2.FONT_HERSHEY_PLAIN
+_F   = cv2.FONT_HERSHEY_DUPLEX
+_FT  = cv2.FONT_HERSHEY_PLAIN   # small mono for table cells
 
 
-def _put(img, text, xy, scale=0.38, color=_WHITE, thickness=1):
-    cv2.putText(img, text, xy, _FONT, scale, color, thickness, cv2.LINE_AA)
+def _put(img, text, xy, scale=0.45, color=_TEXT, thickness=1, font=_F):
+    cv2.putText(img, str(text), xy, font, scale, color, thickness, cv2.LINE_AA)
 
 
-def _panel(h, w):
-    """Blank dark panel."""
-    return np.full((h, w, 3), _BG, dtype=np.uint8)
+def _text_w(text, scale=0.45, thickness=1, font=_F):
+    (w, _), _ = cv2.getTextSize(str(text), font, scale, thickness)
+    return w
 
 
 def _draw_detections(img_bgr, boxes, kps_all, primary, cfg):
@@ -274,94 +277,99 @@ def _draw_detections(img_bgr, boxes, kps_all, primary, cfg):
     out = img_bgr.copy()
     h, w = out.shape[:2]
 
-    # All bounding boxes
     for i, box in enumerate(boxes):
         bx1, by1, bx2, by2 = [int(v) for v in box]
-        color = (50, 50, 220) if i == primary else _BLUE  # red-ish for primary
+        color = (50, 50, 210) if i == primary else (200, 120, 60)
         thick = 2 if i == primary else 1
         cv2.rectangle(out, (bx1, by1), (bx2, by2), color, thick)
-        area = (bx2 - bx1) * (by2 - by1)
-        _put(out, f"#{i} {int(area)}", (bx1, max(by1 - 4, 10)), 0.32,
-             color, 1)
 
-    # Skeleton + keypoints for primary detection only
     kps = kps_all[primary]
     for a, b in _SKELETON:
         xa, ya, ca = kps[a]
         xb, yb, cb = kps[b]
         if ca >= cfg.back_conf and cb >= cfg.back_conf:
-            cv2.line(out, (int(xa), int(ya)), (int(xb), int(yb)), _MUTED, 1,
-                     cv2.LINE_AA)
-    for ki, (kx, ky, kc) in enumerate(kps):
+            cv2.line(out, (int(xa), int(ya)), (int(xb), int(yb)),
+                     (180, 180, 180), 1, cv2.LINE_AA)
+    for kx, ky, kc in kps:
         if kc >= cfg.back_conf:
-            color = _GREEN if kc >= cfg.face_conf else _GOLD
-            cv2.circle(out, (int(kx), int(ky)), 3, color, -1, cv2.LINE_AA)
-            _put(out, COCO_KP_NAMES[ki], (int(kx) + 3, int(ky) + 3), 0.28,
-                 color, 1)
+            col = _GREEN if kc >= cfg.face_conf else _GOLD
+            cv2.circle(out, (int(kx), int(ky)), 4, col, -1, cv2.LINE_AA)
+            cv2.circle(out, (int(kx), int(ky)), 4, (60, 60, 60), 1, cv2.LINE_AA)
 
-    # Legend
-    _put(out, f"{len(boxes)} det  primary=#0", (4, h - 20), 0.30, _MUTED)
+    _put(out, f"{len(boxes)} det", (4, h - 8), 0.38, (255, 255, 255), 1)
     return out
 
 
-def _draw_crop(crop_bgr, orientation, extent, final_cls):
-    """Panel 2: primary bbox crop with verdict text."""
-    if crop_bgr is None or crop_bgr.size == 0:
-        out = _panel(200, 160)
-        _put(out, "no crop", (10, 100), 0.40, _MUTED)
-        return out
-    out     = crop_bgr.copy()
-    h, w    = out.shape[:2]
-    color   = _GREEN if final_cls not in ('others', 'bad_extraction') else _ORANGE
-    _put(out, f"ori: {orientation or 'none'}", (4, 14), 0.34, color)
-    _put(out, f"ext: {extent   or 'none'}", (4, 26), 0.34, color)
+def _draw_crop(crop_bgr, orientation, extent, final_cls, panel_h, panel_w):
+    """Panel 2: primary crop on white background with verdict text and border."""
+    out = np.full((panel_h, panel_w, 3), 255, dtype=np.uint8)
+
+    if crop_bgr is not None and crop_bgr.size > 0:
+        ch, cw = crop_bgr.shape[:2]
+        scale  = min((panel_h - 30) / max(ch, 1), (panel_w - 10) / max(cw, 1))
+        nw, nh = int(cw * scale), int(ch * scale)
+        resized = cv2.resize(crop_bgr, (nw, nh))
+        x0 = (panel_w - nw) // 2
+        y0 = 24
+        out[y0:y0 + nh, x0:x0 + nw] = resized
+        cv2.rectangle(out, (x0, y0), (x0 + nw, y0 + nh), _SEP, 1)
+
+    vcol = _ACCENT if final_cls not in ('others', 'bad_extraction') else _OTHERS
+    _put(out, f"ori: {orientation or 'none'}", (6, 14), 0.42, vcol)
+    _put(out, f"ext: {extent or 'none'}",      (6, 30), 0.42, vcol)
     return out
 
 
-def _draw_bar_chart(kp_confs, cfg, panel_h, panel_w):
+def _draw_bar_chart(kp_confs, kp_names, cfg, panel_h, panel_w):
     """
     Panel 3: horizontal confidence bars for all 17 keypoints, drawn with CV2.
+    Labels left-aligned in a fixed column; numeric values right of bars.
     """
-    out     = _panel(panel_h, panel_w)
-    n       = 17
-    row_h   = (panel_h - 30) // n
-    bar_max = panel_w - 90   # pixels for a conf=1.0 bar
-    x0      = 72             # left edge of bars
+    out = np.full((panel_h, panel_w, 3), _BG, dtype=np.uint8)
 
-    # Column header
-    _put(out, "kp confidence", (x0, 12), 0.34, _MUTED)
+    n       = len(kp_names)
+    top_pad = 28
+    bot_pad = 30
+    usable  = panel_h - top_pad - bot_pad
+    row_h   = usable // n
 
-    for i, (name, conf) in enumerate(zip(COCO_KP_NAMES, kp_confs)):
-        y_center = 24 + i * row_h + row_h // 2
-        y_top    = y_center - row_h // 2 + 2
-        y_bot    = y_center + row_h // 2 - 2
+    label_col_w = 80   # fixed width for keypoint names
+    val_col_w   = 38   # fixed width for numeric value on the right
+    bar_x0      = label_col_w + 4
+    bar_max_w   = panel_w - bar_x0 - val_col_w - 8
 
-        # Keypoint name
-        _put(out, name, (2, y_center + 4), 0.30, _MUTED)
+    _put(out, "Keypoint confidences", (6, 16), 0.42, _MUTED)
 
-        # Bar colour by threshold
+    for i, (name, conf) in enumerate(zip(kp_names, kp_confs)):
+        y_mid = top_pad + i * row_h + row_h // 2
+        y_txt = y_mid + 5
+
+        _put(out, name, (4, y_txt), 0.38, _MUTED, font=_FT)
+
         if conf < cfg.back_conf:
-            bar_col = _RED_BGR
+            bar_col = _RED
         elif conf < cfg.face_conf:
             bar_col = _GOLD
         else:
             bar_col = _GREEN
 
-        bar_w = max(1, int(conf * bar_max))
-        cv2.rectangle(out, (x0, y_top), (x0 + bar_w, y_bot), bar_col, -1)
+        bar_w = max(1, int(conf * bar_max_w))
+        y_top = y_mid - row_h // 2 + 3
+        y_bot = y_mid + row_h // 2 - 3
+        cv2.rectangle(out, (bar_x0, y_top), (bar_x0 + bar_w, y_bot), bar_col, -1)
 
-        # Conf value text
-        _put(out, f"{conf:.2f}", (x0 + bar_w + 3, y_center + 4), 0.28, bar_col)
+        _put(out, f"{conf:.2f}", (bar_x0 + bar_max_w + 4, y_txt),
+             0.36, _TEXT, font=_FT)
 
     # Threshold lines
-    for thresh, color, label in [
-        (cfg.back_conf,  _GOLD,        f"bk={cfg.back_conf:.2f}"),
-        (cfg.body_conf,  _ACCENT,      f"bd={cfg.body_conf:.2f}"),
-        (cfg.face_conf,  _GREEN,       f"fc={cfg.face_conf:.2f}"),
+    for thresh, col, label in [
+        (cfg.back_conf,  _GOLD,  f"bk={cfg.back_conf:.2f}"),
+        (cfg.body_conf,  (180, 120, 60), f"bd={cfg.body_conf:.2f}"),
+        (cfg.face_conf,  _GREEN, f"fc={cfg.face_conf:.2f}"),
     ]:
-        lx = x0 + int(thresh * bar_max)
-        cv2.line(out, (lx, 18), (lx, panel_h - 4), color, 1, cv2.LINE_AA)
-        _put(out, label, (lx + 2, panel_h - 4), 0.27, color)
+        lx = bar_x0 + int(thresh * bar_max_w)
+        cv2.line(out, (lx, top_pad), (lx, panel_h - bot_pad), col, 1, cv2.LINE_AA)
+        _put(out, label, (lx + 2, panel_h - 6), 0.30, col, font=_FT)
 
     return out
 
@@ -369,77 +377,96 @@ def _draw_bar_chart(kp_confs, cfg, panel_h, panel_w):
 def _draw_trace(trace_rows, orientation, extent, final_cls, panel_h, panel_w):
     """
     Panel 4: rule-by-rule decision trace table drawn with CV2.
+    PASS rows get a green tint; FAIL rows get a red tint.
     """
-    out   = _panel(panel_h, panel_w)
-    color = _GREEN if final_cls not in ('others', 'bad_extraction') else _ORANGE
+    out = np.full((panel_h, panel_w, 3), _BG, dtype=np.uint8)
 
-    # Title
-    _put(out, f"Decision trace", (6, 14), 0.38, _WHITE)
-    _put(out, f"ori={orientation or 'none'}  ext={extent or 'none'}", (6, 26), 0.32, _MUTED)
-    _put(out, f"=> {final_cls}", (6, 40), 0.40, color, 1)
+    vcol = _ACCENT if final_cls not in ('others', 'bad_extraction') else _OTHERS
 
-    # Table header
-    cols   = [6, 120, 260, 390]
-    header = ["rule", "measured", "threshold", "result"]
-    y_hdr  = 58
-    for cx, h_text in zip(cols, header):
-        _put(out, h_text, (cx, y_hdr), 0.32, _MUTED)
-    cv2.line(out, (4, y_hdr + 4), (panel_w - 4, y_hdr + 4), _MUTED, 1)
+    _put(out, "Decision trace", (6, 16), 0.50, _TEXT, thickness=1)
+    _put(out, f"ori={orientation or 'none'}  ext={extent or 'none'}",
+         (6, 34), 0.40, _MUTED)
+    _put(out, f"=> {final_cls}", (6, 52), 0.52, vcol, thickness=1)
 
-    row_h = (panel_h - y_hdr - 16) // max(len(trace_rows), 1)
+    col_x    = [6, 140, 310, 430]    # Rule | Measured | Threshold | Result
+    col_w    = [132, 168, 118, 60]
+    hdr_y    = 70
+    row_start= 84
+    n_rows   = len(trace_rows)
+    row_h    = (panel_h - row_start - 8) // max(n_rows, 1)
+
+    # Header bar
+    cv2.rectangle(out, (4, hdr_y - 14), (panel_w - 4, hdr_y + 4), _SEP, -1)
+    for cx, label in zip(col_x, ["Rule", "Measured", "Threshold", "Result"]):
+        _put(out, label, (cx + 2, hdr_y), 0.38, _MUTED, font=_FT)
+
     for ri, (rule, measured, threshold, result) in enumerate(trace_rows):
-        y = y_hdr + 16 + ri * row_h
-        res_color = _GREEN if result == "PASS" else _RED_BGR
-        # Highlight row bg for FAIL
-        if result != "PASS":
-            cv2.rectangle(out, (4, y - row_h + 4), (panel_w - 4, y + 4),
-                          (30, 20, 50), -1)
-        _put(out, rule,      (cols[0], y), 0.32, _WHITE)
-        _put(out, measured,  (cols[1], y), 0.30, _MUTED)
-        _put(out, threshold, (cols[2], y), 0.30, _MUTED)
-        _put(out, result,    (cols[3], y), 0.34, res_color, 1)
+        y0   = row_start + ri * row_h
+        y1   = y0 + row_h - 2
+        ytxt = y0 + row_h - 6
+
+        bg = _PASS_BG if result == "PASS" else _FAIL_BG
+        cv2.rectangle(out, (4, y0), (panel_w - 4, y1), bg, -1)
+
+        for cx, cw, text in zip(col_x, col_w, [rule, measured, threshold, result]):
+            rcol = _GREEN if result == "PASS" and text == result else (
+                   _RED   if result == "FAIL" and text == result else _TEXT)
+            # Truncate text to fit column width
+            s = text
+            while len(s) > 1 and _text_w(s, 0.34, 1, _FT) > cw - 4:
+                s = s[:-1]
+            _put(out, s, (cx + 2, ytxt), 0.34, rcol, font=_FT)
+
+        cv2.line(out, (4, y1), (panel_w - 4, y1), _SEP, 1)
 
     return out
 
 
 def render_diagnostic(
     result,
-    img_bgr: np.ndarray,
-    cfg: ClassifierConfig = DEFAULT_CONFIG,
-    predicted_class: str | None = None,
-) -> np.ndarray:
+    img_bgr,
+    cfg=None,
+    predicted_class=None,
+):
     """
-    Render the deep classification diagnostic as a BGR image using CV2 only.
-    ~10-20x faster than the matplotlib version with no external dependencies.
+    Render classification diagnostic as a BGR image using CV2 only (~10-20x
+    faster than the matplotlib version).  Matches the matplotlib layout and
+    colour scheme as closely as possible.
 
-    4-panel layout:
-      1. Original patch — all bboxes + skeleton of primary detection
-      2. Primary bbox crop
-      3. Keypoint confidence bars
-      4. Rule-by-rule decision trace
+    4-panel layout (left to right):
+      1. Detection overlay — bboxes + skeleton on the original patch
+      2. Primary bbox crop — white background, labelled
+      3. Keypoint confidence bars — light background, labelled
+      4. Decision trace table  — PASS/FAIL cells with colour coding
 
     Args:
-        result:           Single YOLO pose result object (already inferred).
-        img_bgr:          Original BGR image the result was run on.
-        cfg:              ClassifierConfig.
-        predicted_class:  Pre-computed class label; re-derived if None.
+        result:          Single YOLO pose result (already inferred).
+        img_bgr:         Original BGR image.
+        cfg:             ClassifierConfig; uses DEFAULT_CONFIG if None.
+        predicted_class: Pre-computed class string; re-derived if None.
 
     Returns:
         BGR numpy array (H, W, 3).
     """
+    if cfg is None:
+        cfg = DEFAULT_CONFIG
+
     h_img, w_img = img_bgr.shape[:2]
-    OUT_H = max(h_img, 340)   # panel height — at least 340px for readability
+    OUT_H = max(h_img, 380)
 
     # --- No detections ---
     if result.keypoints is None or result.keypoints.data.shape[0] == 0:
-        out = _panel(OUT_H, w_img + 600)
-        # Show the original patch on the left
-        ph = min(h_img, OUT_H)
+        bar_w   = 340
+        trace_w = 500
+        total_w = w_img + bar_w + trace_w + 6
+        out = np.full((OUT_H, total_w, 3), _BG, dtype=np.uint8)
+        ph  = min(h_img, OUT_H)
         out[:ph, :w_img] = img_bgr[:ph]
-        _put(out, "No pose detections found", (w_img + 10, OUT_H // 2 - 10),
-             0.50, _ORANGE, 1)
-        _put(out, "=> classified as 'others'", (w_img + 10, OUT_H // 2 + 14),
-             0.42, _MUTED)
+        cv2.line(out, (w_img + 2, 0), (w_img + 2, OUT_H), _SEP, 2)
+        _put(out, "No pose detections found",
+             (w_img + 12, OUT_H // 2 - 10), 0.55, _OTHERS, thickness=1)
+        _put(out, "=> classified as 'others'",
+             (w_img + 12, OUT_H // 2 + 18), 0.48, _MUTED)
         return out
 
     boxes   = result.boxes.xyxy.cpu().numpy()
@@ -449,18 +476,16 @@ def render_diagnostic(
     kps     = kp_data[primary]
     bbox    = boxes[primary]
 
-    # Primary crop (BGR)
     x1c = max(0, int(bbox[0])); y1c = max(0, int(bbox[1]))
     x2c = min(w_img, int(bbox[2])); y2c = min(h_img, int(bbox[3]))
     crop_bgr = img_bgr[y1c:y2c, x1c:x2c]
 
-    # Classification
     orientation = classify_orientation(kps, cfg)
     extent      = classify_extent(kps, bbox, cfg)
     final_cls   = predicted_class if predicted_class is not None \
                   else classify_keypoints(kps, bbox, cfg)
 
-    # Decision trace values
+    # Trace values
     nose, l_eye, r_eye = kps[0, 2], kps[1, 2], kps[2, 2]
     n_lower  = n_visible(kps, LOWER_KPS, cfg.body_conf)
     n_ankles = n_visible(kps, ANKLE_KPS, cfg.body_conf)
@@ -470,46 +495,49 @@ def render_diagnostic(
     aspect   = h_box / w_box
 
     trace_rows = [
-        ("Front",       f"nose={nose:.2f} eL={l_eye:.2f} eR={r_eye:.2f}",
+        ("Front",
+         f"n={nose:.2f} eL={l_eye:.2f} eR={r_eye:.2f}",
          f"all>={cfg.face_conf:.2f}",
-         "PASS" if (nose>=cfg.face_conf and l_eye>=cfg.face_conf and r_eye>=cfg.face_conf) else "FAIL"),
-        ("Back",        f"nose={nose:.2f} eyes_vis={sum(1 for c in (l_eye,r_eye) if c>=cfg.back_conf)}",
-         f"nose<{cfg.nose_back_conf:.2f} eyes<={cfg.max_eyes_for_back}",
-         "PASS" if (nose<cfg.nose_back_conf and sum(1 for c in (l_eye,r_eye) if c>=cfg.back_conf)<=cfg.max_eyes_for_back) else "FAIL"),
-        ("Lower-body",  f"lower={n_lower} ankles={n_ankles}",
+         "PASS" if (nose >= cfg.face_conf and l_eye >= cfg.face_conf and r_eye >= cfg.face_conf) else "FAIL"),
+        ("Back",
+         f"n={nose:.2f} eyes_vis={sum(1 for c in (l_eye, r_eye) if c >= cfg.back_conf)}",
+         f"n<{cfg.nose_back_conf:.2f} eyes<={cfg.max_eyes_for_back}",
+         "PASS" if (nose < cfg.nose_back_conf and
+                    sum(1 for c in (l_eye, r_eye) if c >= cfg.back_conf) <= cfg.max_eyes_for_back)
+                else "FAIL"),
+        ("Lower-body",
+         f"lower={n_lower} ankles={n_ankles}",
          "ankles>=1 OR lower>=3",
-         "PASS" if (n_ankles>=1 or n_lower>=3) else "FAIL"),
-        ("Aspect",      f"h/w={aspect:.2f}",
+         "PASS" if (n_ankles >= 1 or n_lower >= 3) else "FAIL"),
+        ("Aspect",
+         f"h/w={aspect:.2f}",
          f">={cfg.aspect_ratio_min:.1f}",
-         "PASS" if aspect>=cfg.aspect_ratio_min else "FAIL"),
-        ("Shoulder",    f"visible={n_shldrs}",
+         "PASS" if aspect >= cfg.aspect_ratio_min else "FAIL"),
+        ("Shoulder",
+         f"vis={n_shldrs}",
          f">=1@{cfg.body_conf:.2f}",
-         "PASS" if n_shldrs>=1 else "FAIL"),
+         "PASS" if n_shldrs >= 1 else "FAIL"),
     ]
 
     # --- Build panels ---
-    # P1: detection overlay — same size as input patch
+    scale_p1 = OUT_H / max(h_img, 1)
+    p1_w     = int(w_img * scale_p1)
     p1 = _draw_detections(img_bgr, boxes, kp_data, primary, cfg)
-    p1 = cv2.resize(p1, (int(w_img * OUT_H / h_img), OUT_H))
+    p1 = cv2.resize(p1, (p1_w, OUT_H), interpolation=cv2.INTER_LINEAR)
 
-    # P2: primary crop — fixed width proportional to crop aspect ratio, capped
-    if crop_bgr.size > 0:
-        cw = int(crop_bgr.shape[1] * OUT_H / max(crop_bgr.shape[0], 1))
-        cw = max(80, min(cw, 200))
-        p2 = _draw_crop(cv2.resize(crop_bgr, (cw, OUT_H)), orientation, extent, final_cls)
-    else:
-        p2 = _draw_crop(None, orientation, extent, final_cls)
-        p2 = cv2.resize(p2, (160, OUT_H))
+    crop_panel_w = max(120, min(200, int(OUT_H * 0.5)))
+    p2 = _draw_crop(crop_bgr, orientation, extent, final_cls, OUT_H, crop_panel_w)
 
-    # P3: confidence bars — fixed width
-    p3 = _draw_bar_chart(kps[:, 2], cfg, OUT_H, 200)
+    bar_panel_w = 240
+    p3 = _draw_bar_chart(kps[:, 2], COCO_KP_NAMES, cfg, OUT_H, bar_panel_w)
 
-    # P4: trace table — fixed width
-    p4 = _draw_trace(trace_rows, orientation, extent, final_cls, OUT_H, 420)
+    trace_panel_w = 500
+    p4 = _draw_trace(trace_rows, orientation, extent, final_cls, OUT_H, trace_panel_w)
 
-    # 2px dark separator between panels
-    sep = _panel(OUT_H, 2)
+    # Thin separators + outer border
+    sep = np.full((OUT_H, 2, 3), _SEP, dtype=np.uint8)
     out = np.concatenate([p1, sep, p2, sep, p3, sep, p4], axis=1)
+    cv2.rectangle(out, (0, 0), (out.shape[1] - 1, out.shape[0] - 1), _SEP, 1)
     return out
 
 
