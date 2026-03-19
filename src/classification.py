@@ -60,6 +60,13 @@ CLASSES = [
     'others',
 ]
 
+COCO_KP_NAMES = [
+    "nose", "l_eye", "r_eye", "l_ear", "r_ear",
+    "l_shoulder", "r_shoulder", "l_elbow", "r_elbow",
+    "l_wrist", "r_wrist", "l_hip", "r_hip",
+    "l_knee", "r_knee", "l_ankle", "r_ankle",
+]
+
 # COCO index groups
 LOWER_KPS = [11, 12, 13, 14, 15, 16]   # hips, knees, ankles
 ANKLE_KPS = [15, 16]
@@ -224,6 +231,210 @@ def classify_keypoints(
 
 
 # ---------------------------------------------------------------------------
+# Deep diagnostic rendering  (used by classify_directory and annotate.py)
+# ---------------------------------------------------------------------------
+
+def render_diagnostic(
+    result,
+    img_bgr: np.ndarray,
+    cfg: ClassifierConfig = DEFAULT_CONFIG,
+    predicted_class: str | None = None,
+) -> np.ndarray:
+    """
+    Render the deep classification diagnostic as a BGR image.
+
+    Produces a 4-panel figure:
+      1. Original patch with all YOLO detections + keypoints annotated
+      2. Primary bbox crop
+      3. Per-keypoint confidence bar chart
+      4. Rule-by-rule decision trace table
+
+    Args:
+        result:           Single YOLO pose result object (already inferred).
+        img_bgr:          Original BGR image the result was run on.
+        cfg:              ClassifierConfig used for classification thresholds.
+        predicted_class:  Optional pre-computed class label to show in title.
+                          If None, re-derives it from result.
+
+    Returns:
+        BGR numpy array (H, W, 3) suitable for cv2.imwrite or display.
+        Returns a plain grey placeholder if no pose detections were found.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from io import BytesIO
+
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    h_img, w_img = img_rgb.shape[:2]
+
+    # --- No detections: return a simple placeholder ---
+    if result.keypoints is None or result.keypoints.data.shape[0] == 0:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+        ax.imshow(img_rgb)
+        ax.set_title("No pose detections found\n→ classified as 'others'", color="orange", fontsize=10)
+        ax.axis("off")
+        buf = BytesIO()
+        plt.savefig(buf, format="png", bbox_inches="tight", dpi=100)
+        plt.close(fig)
+        buf.seek(0)
+        arr = np.frombuffer(buf.read(), dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+    boxes   = result.boxes.xyxy.cpu().numpy()
+    kp_data = result.keypoints.data.cpu().numpy()
+    areas   = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    primary = int(np.argmax(areas))
+    kps     = kp_data[primary]
+    bbox    = boxes[primary]
+
+    # Primary crop
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    x1c, y1c = max(0, x1), max(0, y1)
+    x2c, y2c = min(w_img, x2), min(h_img, y2)
+    crop_rgb  = img_rgb[y1c:y2c, x1c:x2c]
+
+    # Classification
+    orientation = classify_orientation(kps, cfg)
+    extent      = classify_extent(kps, bbox, cfg)
+    final_cls   = predicted_class if predicted_class is not None else classify_keypoints(kps, bbox, cfg)
+
+    # Intermediate values for trace
+    nose      = kps[0, 2]
+    l_eye     = kps[1, 2]
+    r_eye     = kps[2, 2]
+    n_lower   = n_visible(kps, LOWER_KPS, cfg.body_conf)
+    n_ankles  = n_visible(kps, ANKLE_KPS, cfg.body_conf)
+    n_shldrs  = n_visible(kps, UPPER_KPS, cfg.body_conf)
+    h_box     = bbox[3] - bbox[1]
+    w_box     = (bbox[2] - bbox[0]) + 1e-6
+    aspect    = h_box / w_box
+
+    front_pass  = nose >= cfg.face_conf and l_eye >= cfg.face_conf and r_eye >= cfg.face_conf
+    back_pass   = nose < cfg.nose_back_conf and sum(
+        1 for c in (l_eye, r_eye) if c >= cfg.back_conf
+    ) <= cfg.max_eyes_for_back
+    has_lower   = n_ankles >= 1 or n_lower >= 3
+    aspect_pass = aspect >= cfg.aspect_ratio_min
+    has_shldr   = n_shldrs >= 1
+
+    trace_rows = [
+        ["Front check",
+         f"nose={nose:.2f} eyeL={l_eye:.2f} eyeR={r_eye:.2f}",
+         f">= face_conf({cfg.face_conf:.2f})",
+         "PASS" if front_pass else "FAIL"],
+        ["Back check",
+         f"nose={nose:.2f} eyeL={l_eye:.2f} eyeR={r_eye:.2f}",
+         f"nose<{cfg.nose_back_conf:.2f}, eyes<={cfg.max_eyes_for_back}",
+         "PASS" if back_pass else "FAIL"],
+        ["Lower-body",
+         f"lower={n_lower} ankles={n_ankles}",
+         "ankles>=1 OR lower>=3",
+         "PASS" if has_lower else "FAIL"],
+        ["Aspect ratio",
+         f"h/w={aspect:.2f}",
+         f">= {cfg.aspect_ratio_min:.1f} for full_body",
+         "PASS" if aspect_pass else "FAIL"],
+        ["Shoulder",
+         f"visible={n_shldrs}",
+         f">=1 @ body_conf({cfg.body_conf:.2f})",
+         "PASS" if has_shldr else "FAIL"],
+    ]
+
+    kp_confs = kps[:, 2]
+
+    # --- Figure ---
+    fig = plt.figure(figsize=(20, 6))
+    gs  = fig.add_gridspec(1, 4, width_ratios=[3, 1.5, 1.5, 3], wspace=0.3)
+
+    # Panel 1: all detections + keypoints
+    ax1 = fig.add_subplot(gs[0])
+    ax1.imshow(img_rgb)
+    for i, (box, area) in enumerate(zip(boxes, areas)):
+        bx1, by1, bx2, by2 = box
+        color = "red" if i == primary else "dodgerblue"
+        lw    = 2.5  if i == primary else 1.2
+        rect  = mpatches.Rectangle(
+            (bx1, by1), bx2 - bx1, by2 - by1,
+            linewidth=lw, edgecolor=color, facecolor="none",
+        )
+        ax1.add_patch(rect)
+        ax1.text(bx1, by1 - 4, f"#{i} area={int(area)}", color=color, fontsize=7)
+    for ki, (kx, ky, kc) in enumerate(kps):
+        if kc >= cfg.back_conf:
+            c = "lime" if kc >= cfg.face_conf else "gold"
+            ax1.plot(kx, ky, "o", color=c, markersize=4)
+            ax1.text(kx + 2, ky, COCO_KP_NAMES[ki], color=c, fontsize=5)
+    ax1.set_title(
+        f"All detections ({len(boxes)} found)\n"
+        f"Red=primary  green kp>=face_conf={cfg.face_conf:.2f}  gold>=back_conf",
+        fontsize=8,
+    )
+    ax1.axis("off")
+
+    # Panel 2: primary crop
+    ax2 = fig.add_subplot(gs[1])
+    if crop_rgb.size > 0:
+        ax2.imshow(crop_rgb)
+    verdict_color = "green" if final_cls != "others" else "orange"
+    ax2.set_title(
+        f"Primary crop\norientation={orientation}  extent={extent}",
+        fontsize=8, color=verdict_color,
+    )
+    ax2.axis("off")
+
+    # Panel 3: keypoint confidence bars
+    ax3 = fig.add_subplot(gs[2])
+    bar_colors = [
+        "tomato" if c < cfg.back_conf
+        else ("gold" if c < cfg.face_conf else "limegreen")
+        for c in kp_confs
+    ]
+    ax3.barh(range(17), kp_confs, color=bar_colors)
+    ax3.axvline(cfg.back_conf,  color="gold",       linestyle=":",  linewidth=1,
+                label=f"back_conf={cfg.back_conf:.2f}")
+    ax3.axvline(cfg.body_conf,  color="dodgerblue", linestyle="-.", linewidth=1,
+                label=f"body_conf={cfg.body_conf:.2f}")
+    ax3.axvline(cfg.face_conf,  color="limegreen",  linestyle="--", linewidth=1,
+                label=f"face_conf={cfg.face_conf:.2f}")
+    ax3.set_yticks(range(17))
+    ax3.set_yticklabels(COCO_KP_NAMES, fontsize=7)
+    ax3.set_xlim(0, 1)
+    ax3.set_xlabel("confidence", fontsize=8)
+    ax3.set_title("Keypoint confidences\n(primary detection)", fontsize=8)
+    ax3.invert_yaxis()
+    ax3.legend(fontsize=6, loc="lower right")
+
+    # Panel 4: decision trace table
+    ax4 = fig.add_subplot(gs[3])
+    ax4.axis("off")
+    col_labels = ["Rule", "Measured", "Threshold", "Result"]
+    tbl = ax4.table(cellText=trace_rows, colLabels=col_labels,
+                    cellLoc="center", loc="center")
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(7)
+    tbl.auto_set_column_width(range(len(col_labels)))
+    # Colour PASS/FAIL cells
+    for (row, col), cell in tbl.get_celld().items():
+        if col == 3 and row > 0:
+            cell.set_facecolor("#d4edda" if cell.get_text().get_text() == "PASS" else "#f8d7da")
+    ax4.set_title(
+        f"Decision trace\norientation={orientation}  extent={extent}\n"
+        f"Predicted: {final_cls}",
+        fontsize=8, color=verdict_color,
+    )
+
+    # Render to BGR numpy array
+    buf = BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", dpi=100)
+    plt.close(fig)
+    buf.seek(0)
+    arr = np.frombuffer(buf.read(), dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+# ---------------------------------------------------------------------------
 # Batched directory classification
 # ---------------------------------------------------------------------------
 
@@ -246,7 +457,7 @@ def classify_directory(
         cfg:            ClassifierConfig controlling thresholds and ablation flags.
         batch_size:     Images per inference call.
         copy_files:     If True, copy patches into per-class subdirs.
-        save_debug_viz: If True, save YOLO-annotated images to output_dir/debug_viz/.
+        save_debug_viz: If True, save deep diagnostic images to output_dir/debug_viz/.
 
     Returns:
         results: dict mapping filename -> class string.
@@ -297,10 +508,10 @@ def classify_directory(
                 shutil.copy(img_path, os.path.join(output_dir, cls, fname))
 
             if save_debug_viz:
-                cv2.imwrite(
-                    os.path.join(output_dir, 'debug_viz', fname),
-                    result.plot(),
-                )
+                img_bgr = cv2.imread(img_path)
+                if img_bgr is not None:
+                    diag = render_diagnostic(result, img_bgr, cfg, predicted_class=cls)
+                    cv2.imwrite(os.path.join(output_dir, 'debug_viz', fname), diag)
 
     print(f"\nDone. {dict((k, v) for k, v in summary.items() if v > 0)}")
     return results, summary
