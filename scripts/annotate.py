@@ -395,12 +395,17 @@ HTML = r"""
   }
   .cls-badge.visible { visibility: visible; }
 
-  /* ── Reclassify panel (inline, above sticky bar) ── */
+  /* ── Reclassify panel (anchored to sticky bar) ── */
   .reclassify-panel {
     display: none; flex-direction: column; gap: 8px;
-    width: 100%; max-width: 700px;
+    position: absolute;
+    bottom: calc(var(--ctrl-h) + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(900px, calc(100vw - 40px));
     padding: 12px 14px; border: 1px solid var(--border);
     border-radius: 4px; background: var(--surface);
+    z-index: 25;
   }
   .reclassify-panel.open { display: flex; }
   .reclassify-title { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
@@ -525,8 +530,14 @@ HTML = r"""
       </div>
     </div>
 
-    <!-- Reclassify panel lives here so it scrolls with content,
-         above the sticky bar -->
+  {% endif %}
+  </main>
+
+  <!-- ── Sticky bottom controls bar — always visible ── -->
+  <div class="controls-bar">
+  {% if finished %}
+    <button class="btn-finish" onclick="finish()">Write outputs &amp; exit</button>
+  {% else %}
     <div class="reclassify-panel" id="reclassify-panel">
       <div class="reclassify-title">Reclassify as</div>
       <div class="cls-btn-grid">
@@ -538,15 +549,6 @@ HTML = r"""
         <button class="cls-btn bad" onclick="reclassify('bad_extraction')"><span class="kbd">6</span> bad_extraction</button>
       </div>
     </div>
-
-  {% endif %}
-  </main>
-
-  <!-- ── Sticky bottom controls bar — always visible ── -->
-  <div class="controls-bar">
-  {% if finished %}
-    <button class="btn-finish" onclick="finish()">Write outputs &amp; exit</button>
-  {% else %}
     <button class="btn-accept" onclick="accept()"><span class="kbd">Y</span> Accept</button>
     <button onclick="toggleReclassify()"><span class="kbd">N</span> Reclassify</button>
     <button class="btn-back"   onclick="goBack()"><span class="kbd">B</span> Back</button>
