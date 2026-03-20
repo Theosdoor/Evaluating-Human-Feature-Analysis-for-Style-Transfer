@@ -103,7 +103,7 @@ RELOAD_EXTRACT = "20260314-195748"
 # -- 1.2 rule-based --
 # Points to a run name under output/init_classifications/.
 # Set to None to run rule-based classification from scratch.
-# RELOAD_INIT_CLS = None
+RELOAD_INIT_CLS = None
 RELOAD_INIT_CLS = "20260314-195748-6"
 
 # -- 1.2b manual annotations --
@@ -128,7 +128,7 @@ RELOAD_GCN = "20260320-162455"
     # others                    5/51  (9.8%)
 
 # -- 1.3 --
-RELOAD_TRAIN_SELECT = None
+# RELOAD_TRAIN_SELECT = None
 
 # -- 2.1 & 2.2 --
 RUN_TRANSLATE_VIDEO = True
@@ -157,6 +157,7 @@ selected_detections = []
 
 if reload_extract:
     selected_detections = reload_extracted_patches(extract_save_path, [d["path"] for d in TRAIN_DATA])
+    print(f"[EXTRACT] Reloaded extracted patches from {extract_save_path} ({len(selected_detections)} patches)")
 else:
     model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
     model.to(DEVICE)
@@ -209,6 +210,7 @@ classify_b_size = 32
 
 if reload_init_cls:
     init_results, init_summary = reload_classification_results(init_cls_save_path)
+    print(f"[INIT_CLS] Reloaded rule-based classification from {init_cls_save_path} (total={sum(init_summary.values())})")
 else:
     pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
     pose_model.to(DEVICE)
@@ -270,6 +272,7 @@ gcn_params = dict(
 
 if reload_gcn:
     results, summary = reload_gcn_results(gcn_save_path)
+    print(f"[GCN] Reloaded GCN results from {gcn_save_path} (total={sum(summary.values())})")
 else:
     if GCN_LABEL_SOURCE == "manual":
         if not RELOAD_ANNOTATIONS:
