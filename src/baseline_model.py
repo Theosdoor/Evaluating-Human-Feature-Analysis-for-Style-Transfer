@@ -93,23 +93,23 @@ def build_frame_dataset(
     testB  = os.path.join(data_dir, "testB")
 
     print("[CUT] Building frame dataset…")
-    _extract_frames(selected_detections, game_paths,  trainA, n_per_domain)
-    _extract_frames(selected_detections, movie_paths, trainB, n_per_domain)
+    a_rebuilt = _extract_frames(selected_detections, game_paths,  trainA, n_per_domain)
+    b_rebuilt = _extract_frames(selected_detections, movie_paths, trainB, n_per_domain)
 
-    _make_held_out_split(trainA, testA)
-    _make_held_out_split(trainB, testB)
+    _make_held_out_split(trainA, testA, force=a_rebuilt)
+    _make_held_out_split(trainB, testB, force=b_rebuilt)
 
     print(f"[CUT] trainA (game):  {len(glob.glob(os.path.join(trainA, '*.jpg')))} frames")
     print(f"[CUT] trainB (movie): {len(glob.glob(os.path.join(trainB, '*.jpg')))} frames")
     return trainA, trainB, testA, testB
 
 
-def _extract_frames(detections, video_paths_for_domain, output_dir, n_frames):
+def _extract_frames(detections, video_paths_for_domain, output_dir, n_frames) -> bool:
     os.makedirs(output_dir, exist_ok=True)
     existing = len(glob.glob(os.path.join(output_dir, "*.jpg")))
     if existing >= n_frames:
         print(f"[CUT] {os.path.basename(output_dir)}: {existing} frames present, skipping.")
-        return
+        return False
 
     domain_dets = [d for d in detections if d["video_path"] in video_paths_for_domain]
     # Deduplicate by (video_path, frame_num) — multiple people in one frame
@@ -160,12 +160,16 @@ def _extract_frames(detections, video_paths_for_domain, output_dir, n_frames):
             saved += 1
         cap.release()
     print(f"[CUT] Saved {saved} frames → {output_dir}")
+    return True
 
 
-def _make_held_out_split(src_dir: str, dst_dir: str, n: int = 200):
+def _make_held_out_split(src_dir: str, dst_dir: str, n: int = 200, force: bool = False):
     os.makedirs(dst_dir, exist_ok=True)
-    if len(glob.glob(os.path.join(dst_dir, "*.jpg"))) >= n:
+    if not force and len(glob.glob(os.path.join(dst_dir, "*.jpg"))) >= n:
         return
+    if force:
+        for f in glob.glob(os.path.join(dst_dir, "*.jpg")):
+            os.remove(f)
     frames = sorted(glob.glob(os.path.join(src_dir, "*.jpg")))[-n:]
     for f in frames:
         shutil.copy(f, os.path.join(dst_dir, os.path.basename(f)))
@@ -232,7 +236,7 @@ def run_inference(
 
     # CUT writes to flat files OR subdirectories depending on version.
     # Output extension varies (.jpg or .png) across CUT versions.
-    fake_tag = "fake_B" if direction == "AtoB" else "fake_A"
+    fake_tag = "fake_B"  # CUT always writes fake_B; direction is controlled by input swap.
     subdir = os.path.join(raw_dir, fake_tag)
     if os.path.isdir(subdir):
         sources = [
