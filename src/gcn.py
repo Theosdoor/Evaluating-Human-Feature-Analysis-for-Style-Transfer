@@ -218,7 +218,7 @@ def extract_and_save_keypoints(
 
     os.makedirs(os.path.dirname(npz_path), exist_ok=True)
     save_keypoints(keypoints_dict, npz_path)
-    print(f"Saved keypoints for {len(keypoints_dict)} patches → {npz_path}")
+    print(f"[GCN] Saved keypoints for {len(keypoints_dict)} patches → {npz_path}")
     return keypoints_dict
 
 
@@ -488,7 +488,7 @@ def train_gcn(
     val_loader   = torch.utils.data.DataLoader(
         val_ds,   batch_size=batch_size, shuffle=False, collate_fn=_collate)
 
-    print(f"GCN training: {len(train_ds)} train  {len(val_ds)} val  "
+    print(f"[GCN] GCN training: {len(train_ds)} train  {len(val_ds)} val  "
           f"({n_no_det} skipped - no detection)")
 
     # Class weights for the loss — computed over the full labelled pool
@@ -523,14 +523,14 @@ def train_gcn(
             best_state   = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         if epoch % 10 == 0 or epoch == epochs:
-            print(f"  epoch {epoch:>3}  "
+            print(f"[GCN] epoch {epoch:>3}  "
                   f"train loss {tr_loss:.4f}  acc {tr_acc:.3f}  |  "
                   f"val loss {va_loss:.4f}  acc {va_acc:.3f}")
 
     if save_plots and plot_dir:
         _save_training_plots(history, plot_dir)
 
-    print(f"Best val accuracy: {best_val_acc:.3f}")
+    print(f"[GCN] Best val accuracy: {best_val_acc:.3f}")
     if best_state is None:
         raise ValueError("No checkpoint captured during training")
     model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
@@ -547,14 +547,14 @@ def train_gcn(
                 cls = IDX_TO_LABEL[gt]
                 per_class_total[cls] += 1
                 per_class_correct[cls] += int(pred == gt)
-    print("  Val accuracy per class:")
+    print("[GCN] Val accuracy per class:")
     per_class_val_acc = {}
     for cls in CLASSES:
         n = per_class_total[cls]
         if n:
             acc = per_class_correct[cls] / n
             per_class_val_acc[cls] = {"correct": per_class_correct[cls], "total": n, "acc": acc}
-            print(f"    {cls:<25} {per_class_correct[cls]}/{n}  ({100*acc:.1f}%)")
+            print(f"[GCN] {cls:<25} {per_class_correct[cls]}/{n}  ({100*acc:.1f}%)")
         else:
             per_class_val_acc[cls] = {"correct": 0, "total": 0, "acc": None}
 
@@ -675,9 +675,11 @@ def save_gcn_results(
                 summary_lines.append(f"{cls:<25} {'—':>7}  {'—':>5}  {'—':>6}")
 
     summary_text = "\n".join(summary_lines)
-    print(summary_text)
-    with open(os.path.join(save_dir, "_summary.txt"), "w") as f:
+    print("[GCN] " + summary_text)
+    summary_path = os.path.join(save_dir, "_summary.txt")
+    with open(summary_path, "w") as f:
         f.write(summary_text + "\n")
+    print(f"[GCN] Summary saved to {summary_path}")
 
     return summary
 

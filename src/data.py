@@ -140,13 +140,13 @@ def get_data_split(
     # Summary
     total_train = sum(len(v) for v in train.values())
     total_val   = sum(len(v) for v in val.values())
-    print(f"Data split — train: {total_train}  val: {total_val}  "
+    print(f"[DATA] Data split — train: {total_train}  val: {total_val}  "
           f"(split={train_split}, seed={seed})")
     for cls in active_classes:
         n_tr = len(train.get(cls, []))
         n_va = len(val.get(cls, []))
         if n_tr + n_va:
-            print(f"  {cls:<25}  train={n_tr:>5}  val={n_va:>5}")
+            print(f"[DATA] {cls:<25}  train={n_tr:>5}  val={n_va:>5}")
 
     return {'train': dict(train), 'val': dict(val)}
 

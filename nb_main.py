@@ -192,7 +192,7 @@ else:
         detections += video_dets
         selected_detections += selected
 
-    print(f"Using freshly-extracted patches from {extract_save_path}")
+    print(f"[EXTRACT] Using freshly-extracted patches from {extract_save_path}")
     save_extraction_summary(extract_save_path, detections, selected_detections)
 
 # %% [markdown]
@@ -210,7 +210,7 @@ classify_b_size = 32
 
 if reload_init_cls:
     init_results, init_summary = reload_classification_results(init_cls_save_path)
-    print(f"[INIT_CLS] Reloaded rule-based classification from {init_cls_save_path} (total={sum(init_summary.values())})")
+    print(f"[CLS] Reloaded rule-based classification from {init_cls_save_path} (total={sum(init_summary.values())})")
 else:
     pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
     pose_model.to(DEVICE)
@@ -238,7 +238,7 @@ else:
         for cls, count in sorted(init_summary.items(), key=lambda x: -x[1]):
             pct = 100 * count / total_classified if total_classified else 0
             f.write(f"{cls:<25} {count:>6}  {pct:>5.1f}%\n")
-    print(f"Rule-based summary saved to {summary_path}")
+    print(f"[CLS] Rule-based summary saved to {summary_path}")
 
 # %% [markdown]
 # Manual Annotation (optional — run scripts/annotate.py separately)
@@ -377,10 +377,10 @@ m2g_fakes = run_inference(
 
 if RUN_TRANSLATE_VIDEO:
     baseline_video = translate_test_video(cut_dir, EXP_NAME, TEST_PATH, q2_1_dir, DEVICE)
-    print(f"Baseline video → {baseline_video}")
+    print(f"[CUT] Baseline video → {baseline_video}")
 else:
     baseline_video = None
-    print("Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
+    print("[CUT] Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
 
 # %%
 metrics = {
@@ -400,7 +400,7 @@ metrics = {
     ),
 }
 for direction, vals in metrics.items():
-    print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
+    print(f"[CUT] {direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
 
 viz_dir = os.path.join(q2_1_dir, "viz")
 os.makedirs(viz_dir, exist_ok=True)
@@ -479,11 +479,11 @@ def _stage_paths(paths, out_dir):
             staged += 1
     return staged
 
-print("Staging 1.3-selected data for 2.2...")
-print(f"  trainA (game):  +{_stage_paths(train_game, trainA)}")
-print(f"  trainB (movie): +{_stage_paths(train_movie, trainB)}")
-print(f"  testA (game):   +{_stage_paths(val_game if val_game else train_game[:200], testA)}")
-print(f"  testB (movie):  +{_stage_paths(val_movie if val_movie else train_movie[:200], testB)}")
+print("[CUT] Staging 1.3-selected data for 2.2...")
+print(f"[CUT] trainA (game):  +{_stage_paths(train_game, trainA)}")
+print(f"[CUT] trainB (movie): +{_stage_paths(train_movie, trainB)}")
+print(f"[CUT] testA (game):   +{_stage_paths(val_game if val_game else train_game[:200], testA)}")
+print(f"[CUT] testB (movie):  +{_stage_paths(val_movie if val_movie else train_movie[:200], testB)}")
 
 results_dir = os.path.join(q2_2_dir, "results")
 
@@ -509,10 +509,10 @@ if RUN_TRANSLATE_VIDEO:
         DEVICE,
         output_name="enhanced_model.mp4",
     )
-    print(f"Enhanced video → {enhanced_video}")
+    print(f"[CUT] Enhanced video → {enhanced_video}")
 else:
     enhanced_video = None
-    print("Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
+    print("[CUT] Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
 
 # %%
 metrics = {
@@ -532,7 +532,7 @@ metrics = {
     ),
 }
 for direction, vals in metrics.items():
-    print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
+    print(f"[CUT] {direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
 
 viz_dir = os.path.join(q2_2_dir, "viz")
 os.makedirs(viz_dir, exist_ok=True)

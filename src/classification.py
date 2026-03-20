@@ -689,7 +689,7 @@ def classify_directory(
         glob.glob(os.path.join(input_dir, '*.png'))
     )
     if not image_paths:
-        print(f"No images found in {input_dir}")
+        print(f"[CLS] No images found in {input_dir}")
         return {}, {}
 
     if copy_files:
@@ -745,9 +745,9 @@ def classify_directory(
         from src.gcn import save_keypoints as _save_kp
         npz_path = os.path.join(input_dir, "_keypoints.npz")
         _save_kp(keypoints_buf, npz_path)
-        print(f"Keypoints saved → {npz_path}")
+        print(f"[CLS] Keypoints saved → {npz_path}")
 
-    print(f"\nDone. {dict((k, v) for k, v in summary.items() if v > 0)}")
+    print(f"[CLS] Done. {dict((k, v) for k, v in summary.items() if v > 0)}")
     return results, summary
 
 
@@ -773,6 +773,6 @@ def reload_classification_results(cls_save_path: str) -> tuple[dict, dict]:
                 summary[cls]   += 1
 
     total = sum(summary.values())
-    print(f"Loaded {total} patches from {cls_save_path}")
-    print("  " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
+    print(f"[CLS] Loaded {total} patches from {cls_save_path}")
+    print("[CLS] " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
     return results, summary

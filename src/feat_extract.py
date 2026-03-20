@@ -338,7 +338,7 @@ def save_patches(detections, output_dir, io_workers=4):
 
                 cap = cv2.VideoCapture(video_path)
                 if not cap.isOpened():
-                    print(f"Warning: could not open {video_path} for saving patches")
+                    print(f"[EXTRACT] Warning: could not open {video_path} for saving patches")
                     continue
 
                 futures = []
@@ -367,7 +367,7 @@ def save_patches(detections, output_dir, io_workers=4):
                     if f.result():
                         saved += 1
 
-    print(f"Saved {saved} patches to {output_dir}")
+    print(f"[EXTRACT] Saved {saved} patches to {output_dir}")
     return saved
 
 
@@ -419,8 +419,8 @@ def save_extraction_summary(extract_save_path, detections, selected_detections):
         summary_path = os.path.join(extract_save_path, "_summary.txt")
         if os.path.exists(summary_path):
             with open(summary_path) as f:
-                print(f.read())
-            print(f"Extraction summary loaded from {summary_path}")
+                print("[EXTRACT] " + f.read())
+            print(f"[EXTRACT] Extraction summary loaded from {summary_path}")
             return summary_path
 
         lines.append(f"Reloaded patches: {len(selected_detections)}")
@@ -434,7 +434,7 @@ def save_extraction_summary(extract_save_path, detections, selected_detections):
         lines.append("(No extraction data available)")
 
     summary_text = "\n".join(lines)
-    print(summary_text)
+    print("[EXTRACT] " + summary_text)
 
     os.makedirs(extract_save_path, exist_ok=True)
     summary_path = os.path.join(extract_save_path, "_summary.txt")
@@ -443,7 +443,7 @@ def save_extraction_summary(extract_save_path, detections, selected_detections):
         f.write(f"Save time: {time.strftime('%Y%m%d-%H%M%S')}\n")
         f.write(f"Directory: {extract_save_path}\n\n")
         f.write(summary_text + "\n")
-    print(f"Extraction summary saved to {summary_path}")
+    print(f"[EXTRACT] Extraction summary saved to {summary_path}")
     return summary_path
 
 
@@ -485,6 +485,6 @@ def reload_extracted_patches(extract_save_path, train_paths):
                 'score': score,
             })
 
-    print(f"Reloaded {len(patch_files)} patches from {extract_save_path}")
-    print(f"  Parsed {len(selected_detections)} detections from filenames")
+    print(f"[EXTRACT] Reloaded {len(patch_files)} patches from {extract_save_path}")
+    print(f"[EXTRACT] Parsed {len(selected_detections)} detections from filenames")
     return selected_detections
