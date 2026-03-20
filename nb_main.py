@@ -64,6 +64,8 @@ TRAIN_DATA = [
 TEST_PATH = os.path.join(DATA_DIR,"Test/Test.mp4")
 SAVE_DIR = os.path.join(PROJECT_ROOT, "output")
 SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
+FIGURES_DIR = os.path.join(PROJECT_ROOT, "figures")
+
 
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
@@ -223,7 +225,7 @@ else:
 # ## 1.2c. GCN Classification
 
 # %%
-from src.gcn import run_gcn_pipeline, reload_gcn_results
+from src.gcn import run_gcn_pipeline, reload_gcn_results, plot_annotation_ablation
 
 gcn_run_name  = reload_gcn if reload_gcn else SAVE_NAME
 gcn_save_path = os.path.join(SAVE_DIR, "gcn_results", gcn_run_name)
@@ -247,7 +249,7 @@ else:
             ann_path = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS, "annotations.json")
         labelled_dir = os.path.dirname(ann_path)
 
-    results, summary = run_gcn_pipeline(
+    results, summary, gcn_per_class_val_acc = run_gcn_pipeline(
         labelled_dir    = labelled_dir,
         cls_source      = GCN_LABEL_SOURCE,
         all_patches_dir = extract_save_path,
@@ -259,10 +261,51 @@ else:
         hidden          = 128,
         dropout         = 0.1,
         batch_size      = 128,
-        exclude_classes   = ['others'],
+        exclude_classes = ['others'],
     )
 
 total_classified = sum(summary.values())
+
+# %% [markdown]
+# ## 1.2d. GCN Annotation Ablation (rule-based vs manual labels)
+
+# %%
+# Run both label sources and compare per-class val accuracy.
+# Requires both RELOAD_INIT_CLS (rule labels) and RELOAD_ANNOTATIONS (manual labels).
+RUN_GCN_ABLATION = False
+
+if RUN_GCN_ABLATION:
+    _rule_dir = os.path.join(SAVE_DIR, "init_classifications", RELOAD_INIT_CLS)
+    _manual_dir = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS)
+    _gcn_kwargs = dict(
+        all_patches_dir = extract_save_path,
+        pose_model_path = os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
+        device          = DEVICE,
+        lr              = 3e-4,
+        epochs          = 300,
+        hidden          = 128,
+        dropout         = 0.1,
+        batch_size      = 128,
+        exclude_classes = ['others'],
+        save_plots      = False,
+    )
+    _, _, _rule_acc = run_gcn_pipeline(
+        labelled_dir = _rule_dir,
+        cls_source   = "rule",
+        save_dir     = os.path.join(SAVE_DIR, "gcn_results", SAVE_NAME + "_ablation_rule"),
+        **_gcn_kwargs,
+    )
+    _, _, _manual_acc = run_gcn_pipeline(
+        labelled_dir = _manual_dir,
+        cls_source   = "manual",
+        save_dir     = os.path.join(SAVE_DIR, "gcn_results", SAVE_NAME + "_ablation_manual"),
+        **_gcn_kwargs,
+    )
+    plot_annotation_ablation(
+        rule_per_class_val_acc   = _rule_acc,
+        manual_per_class_val_acc = _manual_acc,
+        save_path = os.path.join(FIGURES_DIR, "gcn_annotation_ablation.png"),
+    )
 
 # %% [markdown]
 # ## 1.3 Training Data Selection

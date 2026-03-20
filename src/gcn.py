@@ -381,6 +381,59 @@ def _collate(batch):
     return labels, graphs
 
 
+# ---------------------------------------------------------------------------
+# Training curves plot
+# ---------------------------------------------------------------------------
+
+def _save_training_plots(history: list, plot_dir: str):
+    """
+    Save a 2-panel seaborn figure of training curves to plot_dir.
+
+    history : list of dicts with keys epoch, tr_loss, va_loss, tr_acc, va_acc.
+    """
+    import pandas as pd
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    df = pd.DataFrame(history)
+
+    sns.set_theme(style="darkgrid", palette="muted")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    # — Loss panel —
+    loss_df = pd.melt(
+        df, id_vars="epoch",
+        value_vars=["tr_loss", "va_loss"],
+        var_name="split", value_name="loss",
+    )
+    loss_df["split"] = loss_df["split"].map({"tr_loss": "train", "va_loss": "val"})
+    sns.lineplot(data=loss_df, x="epoch", y="loss", hue="split", ax=axes[0])
+    axes[0].set_title("Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Cross-entropy loss")
+
+    # — Accuracy panel —
+    acc_df = pd.melt(
+        df, id_vars="epoch",
+        value_vars=["tr_acc", "va_acc"],
+        var_name="split", value_name="accuracy",
+    )
+    acc_df["split"] = acc_df["split"].map({"tr_acc": "train", "va_acc": "val"})
+    sns.lineplot(data=acc_df, x="epoch", y="accuracy", hue="split", ax=axes[1])
+    axes[1].set_title("Accuracy")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Accuracy")
+    axes[1].set_ylim(0, 1)
+
+    fig.suptitle("GCN training curves", fontsize=13, fontweight="bold")
+    fig.tight_layout()
+
+    out_path = os.path.join(plot_dir, "training_curves.png")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[GCN] Training curves saved → {out_path}")
+
+
 def train_gcn(
     labelled_items: list[tuple[str, str]],
     keypoints_dict: dict,
@@ -393,10 +446,13 @@ def train_gcn(
     batch_size: int   = 32,
     train_split: float= 0.8,
     seed: int         = 42,
-) -> PoseGCN:
+    save_plots: bool  = True,
+    plot_dir: str     = None,
+) -> tuple:
     """
     Train PoseGCN on labelled_items = [(fname, class_string), ...].
-    Returns the trained model (best val-acc checkpoint).
+    Returns (model, per_class_val_acc). Saves training-curve plots when
+    save_plots=True (plot_dir must be provided).
     """
     # Stratified train/val split
     n_total_labelled = len(labelled_items)
@@ -453,11 +509,14 @@ def train_gcn(
 
     best_val_acc  = -1.0
     best_state    = None
+    history       = []
 
     for epoch in tqdm(range(1, epochs + 1), desc="Training GCN", unit="epoch"):
         tr_loss, tr_acc = _train_epoch(model, train_loader, optimiser, criterion, device)
         va_loss, va_acc = _eval_epoch(model,  val_loader,   criterion, device)
         scheduler.step()
+        history.append({"epoch": epoch, "tr_loss": tr_loss, "va_loss": va_loss,
+                        "tr_acc": tr_acc, "va_acc": va_acc})
 
         if va_acc > best_val_acc:
             best_val_acc = va_acc
@@ -467,6 +526,9 @@ def train_gcn(
             print(f"  epoch {epoch:>3}  "
                   f"train loss {tr_loss:.4f}  acc {tr_acc:.3f}  |  "
                   f"val loss {va_loss:.4f}  acc {va_acc:.3f}")
+
+    if save_plots and plot_dir:
+        _save_training_plots(history, plot_dir)
 
     print(f"Best val accuracy: {best_val_acc:.3f}")
     if best_state is None:
@@ -656,7 +718,9 @@ def run_gcn_pipeline(
     exclude_classes: list[str] | None = None,
     # Keypoint cache
     force_reextract_keypoints: bool = False,
-) -> tuple[dict, dict]:
+    # Plots
+    save_plots: bool = True,
+) -> tuple[dict, dict, dict]:
     """
     Full GCN classification pipeline.
 
@@ -672,10 +736,12 @@ def run_gcn_pipeline(
         device         : "cuda" | "mps" | "cpu".
         exclude_classes: Optional class names to exclude from training labels.
         force_reextract_keypoints: Re-run pose inference even if .npz exists.
+        save_plots     : If True (default), save training_curves.png to save_dir.
 
     Returns:
-        results : { fname: class_string }  — for ALL patches
-        summary : { class_string: count }
+        results           : { fname: class_string }  — for ALL patches
+        summary           : { class_string: count }
+        per_class_val_acc : { cls: {correct, total, acc} } from training
     """
     import glob
 
@@ -748,6 +814,8 @@ def run_gcn_pipeline(
         batch_size     = batch_size,
         train_split    = train_split,
         seed           = seed,
+        save_plots     = save_plots,
+        plot_dir       = save_dir,
     )
 
     # Save model checkpoint
@@ -761,4 +829,78 @@ def run_gcn_pipeline(
     # --- 6. Save results ---
     summary = save_gcn_results(results, all_patches_dir, save_dir, per_class_val_acc)
 
-    return results, summary
+    return results, summary, per_class_val_acc
+
+
+# ---------------------------------------------------------------------------
+# Ablation plot
+# ---------------------------------------------------------------------------
+
+def plot_annotation_ablation(
+    rule_per_class_val_acc: dict,
+    manual_per_class_val_acc: dict,
+    save_path: str,
+):
+    """
+    Side-by-side per-class val accuracy barplot comparing GCN trained on
+    rule-based vs manual annotations.  Saves PNG to save_path.
+
+    Args:
+        rule_per_class_val_acc   : per_class_val_acc dict from run_gcn_pipeline
+                                   with cls_source='rule'.
+        manual_per_class_val_acc : same structure for cls_source='manual'.
+        save_path                : full path for the output PNG.
+    """
+    import pandas as pd
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    rows = []
+    for cls in CLASSES:
+        for src, acc_dict in (("rule", rule_per_class_val_acc),
+                              ("manual", manual_per_class_val_acc)):
+            entry = acc_dict.get(cls, {})
+            acc   = entry.get("acc")
+            rows.append({
+                "class":        cls,
+                "label_source": src,
+                "val_accuracy": acc * 100 if acc is not None else float("nan"),
+            })
+
+    df = pd.DataFrame(rows)
+
+    sns.set_theme(style="darkgrid", palette="muted")
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    sns.barplot(
+        data=df,
+        x="class",
+        y="val_accuracy",
+        hue="label_source",
+        ax=ax,
+    )
+
+    # Annotate bars with value
+    for bar in ax.patches:
+        h = bar.get_height()
+        if not (h != h):   # skip NaN bars
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                h + 0.8,
+                f"{h:.1f}%",
+                ha="center", va="bottom",
+                fontsize=8, color="#333333",
+            )
+
+    ax.set_title("GCN val accuracy per class: rule-based vs manual labels",
+                 fontsize=13, fontweight="bold")
+    ax.set_xlabel("Class")
+    ax.set_ylabel("Val accuracy (%)")
+    ax.set_ylim(0, 110)
+    ax.legend(title="Label source")
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[GCN] Ablation plot saved → {save_path}")
