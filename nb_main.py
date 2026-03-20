@@ -99,7 +99,7 @@ GCN_LABEL_SOURCE = "manual"
 
 # Set to a run name under output/gcn_results/ to skip GCN training+inference.
 RELOAD_GCN = None
-# RELOAD_GCN = "20260320-162455" 
+RELOAD_GCN = "20260320-162455"
 # Val accuracy per class for manual annotations:
     # full_body_front           52/72  (72.2%)
     # full_body_back            18/19  (94.7%)
@@ -111,8 +111,7 @@ RELOAD_GCN = None
 RELOAD_TRAIN_SELECT = None
 
 # -- 2.1 --
-RUN_TRAIN_CUT = False
-RUN_TRANSLATE_VIDEO = False
+RUN_TRANSLATE_VIDEO = True
 
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
 reload_extract   = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
@@ -176,9 +175,10 @@ else:
     save_extraction_summary(extract_save_path, detections, selected_detections)
 
 # %% [markdown]
-# ## 1.2. Rule-Based Classification
+# ## 1.2 Classification
 
 # %%
+# initially do it based on rules applied to keypoints
 init_cls_base_dir = os.path.join(SAVE_DIR, "init_classifications")
 if reload_init_cls:
     init_cls_save_path = os.path.join(init_cls_base_dir, reload_init_cls)
@@ -219,7 +219,7 @@ else:
     print(f"Rule-based summary saved to {summary_path}")
 
 # %% [markdown]
-# ## 1.2b. Manual Annotation (optional — run scripts/annotate.py separately)
+# Manual Annotation (optional — run scripts/annotate.py separately)
 #
 # Run annotate.py against init_cls_save_path to produce an annotations.json:
 #
@@ -227,85 +227,72 @@ else:
 #
 # Then set RELOAD_ANNOTATIONS above to the resulting annotations.json path.
 
-# %% [markdown]
-# ## 1.2c. GCN Classification
 
 # %%
+# GCN Classification
 from src.gcn import run_gcn_pipeline, reload_gcn_results, plot_annotation_ablation
 
 gcn_run_name  = reload_gcn if reload_gcn else SAVE_NAME
 gcn_save_path = os.path.join(SAVE_DIR, "gcn_results", gcn_run_name)
 
+gcn_params = dict(
+    all_patches_dir = extract_save_path,
+    pose_model_path = os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
+    device          = DEVICE,
+    lr              = 3e-4,
+    epochs          = 300,
+    hidden          = 128,
+    dropout         = 0.1,
+    batch_size      = 256,
+    # exclude_classes = ['others'],  # including 'others' is actually really important for generalising!!
+    save_plots      = False,
+)
+
 if reload_gcn:
     results, summary = reload_gcn_results(gcn_save_path)
 else:
-    # Decide which labels to use for GCN training
     if GCN_LABEL_SOURCE == "manual":
         if not RELOAD_ANNOTATIONS:
             raise ValueError("GCN_LABEL_SOURCE='manual' but RELOAD_ANNOTATIONS is not set.")
         if os.sep in RELOAD_ANNOTATIONS or "/" in RELOAD_ANNOTATIONS:
-            # treat as explicit path
             ann_path = (
                 os.path.join(PROJECT_ROOT, RELOAD_ANNOTATIONS)
                 if not os.path.isabs(RELOAD_ANNOTATIONS)
                 else RELOAD_ANNOTATIONS
             )
         else:
-            # treat as run name — look up under output/manual_annotated/
             ann_path = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS, "annotations.json")
         labelled_dir = os.path.dirname(ann_path)
 
     results, summary, gcn_per_class_val_acc = run_gcn_pipeline(
-        labelled_dir    = labelled_dir,
-        cls_source      = GCN_LABEL_SOURCE,
-        all_patches_dir = extract_save_path,
-        save_dir        = gcn_save_path,
-        pose_model_path = os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
-        device          = DEVICE,
-        lr              = 3e-4,
-        epochs          = 300,
-        hidden          = 128,
-        dropout         = 0.1,
-        batch_size      = 128,
-        # exclude_classes   = ['others'], # including 'others' is actually really important for generalising!!
+        labelled_dir = labelled_dir,
+        cls_source   = GCN_LABEL_SOURCE,
+        save_dir     = gcn_save_path,
+        **gcn_params,
     )
 
 total_classified = sum(summary.values())
 
-# %% [markdown]
-# ## 1.2d. GCN Annotation Ablation (rule-based vs manual labels)
-
 # %%
+# GCN Annotation Ablation (rule-based vs manual labels)
 # Run both label sources and compare per-class val accuracy.
 # Requires both RELOAD_INIT_CLS (rule labels) and RELOAD_ANNOTATIONS (manual labels).
 RUN_GCN_ABLATION = False
 
 if RUN_GCN_ABLATION:
-    _rule_dir = os.path.join(SAVE_DIR, "init_classifications", RELOAD_INIT_CLS)
+    _rule_dir   = os.path.join(SAVE_DIR, "init_classifications", RELOAD_INIT_CLS)
     _manual_dir = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS)
-    _gcn_kwargs = dict(
-        all_patches_dir = extract_save_path,
-        pose_model_path = os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
-        device          = DEVICE,
-        lr              = 3e-4,
-        epochs          = 300,
-        hidden          = 128,
-        dropout         = 0.1,
-        batch_size      = 128,
-        exclude_classes = ['others'],
-        save_plots      = False,
-    )
     _, _, _rule_acc = run_gcn_pipeline(
         labelled_dir = _rule_dir,
         cls_source   = "rule",
         save_dir     = os.path.join(SAVE_DIR, "gcn_results", SAVE_NAME + "_ablation_rule"),
-        **_gcn_kwargs,
+        **gcn_params,
     )
     _, _, _manual_acc = run_gcn_pipeline(
         labelled_dir = _manual_dir,
         cls_source   = "manual",
         save_dir     = os.path.join(SAVE_DIR, "gcn_results", SAVE_NAME + "_ablation_manual"),
-        **_gcn_kwargs,
+        **gcn_params,
     )
     plot_annotation_ablation(
         rule_per_class_val_acc   = _rule_acc,
@@ -317,117 +304,133 @@ if RUN_GCN_ABLATION:
 # ## 1.3 Training Data Selection
 
 # %%
-from src.data import get_data_split, flat_paths, flat_paths_by_domain
-
-split = get_data_split(
-    gcn_save_path,                  # use GCN results as the classification source
-    train_split=1.0,
-    exclude_classes=['others']
-)
-
-train_game, train_movie = flat_paths_by_domain(split['train'])
-val_game, val_movie     = flat_paths_by_domain(split['val'])
+# 1.
 
 
 # %% [markdown]
 # ## 2.1 Image Model Deployment (baseline model)
 
 # %%
-from src.baseline_model import build_frame_dataset, train_cut, translate_test_video
+from src.baseline_model import (
+    ensure_pretrained_models,
+    build_frame_dataset,
+    run_inference,
+    make_inference_dataroot,
+    compute_metrics,
+    save_comparison_grid,
+    save_umap,
+    PRETRAINED_MODELS,
+    translate_test_video,
+)
+import glob
+import json
 
 cut_dir = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
 data_2_1 = os.path.join(SAVE_DIR, "cut_data")
-exp_game2movie = "cut_game2movie"
-exp_movie2game = "cut_movie2game"
+
+# Pick whichever pretrained model you want to evaluate
+EXP_NAME = "horse2zebra_cut_pretrained"  # or any from PRETRAINED_MODELS (TODO - list options here)
+
+if EXP_NAME not in PRETRAINED_MODELS:
+    raise ValueError(f"Unknown pretrained model '{EXP_NAME}'. Choose from: {PRETRAINED_MODELS}")
+
+ensure_pretrained_models(cut_dir)
 
 n_frames_per_domain = 500
-n_epochs            = 20
-n_epochs_decay      = 5
-batch_size          = 4
 
 trainA, trainB, testA, testB = build_frame_dataset(
     selected_detections, [d["path"] for d in TRAIN_DATA], data_2_1, n_frames_per_domain
 )
 
-if RUN_TRAIN_CUT:
-    train_cut(cut_dir, data_2_1, exp_game2movie, "AtoB", DEVICE, n_epochs, n_epochs_decay, batch_size)
-    train_cut(cut_dir, data_2_1, exp_movie2game, "BtoA", DEVICE, n_epochs, n_epochs_decay, batch_size)
-else:
-    print("Skipping CUT training (RUN_TRAIN_CUT=False).")
+results_dir = os.path.join(SAVE_DIR, "2_1_results")
+
+g2m_fakes = run_inference(
+    cut_dir, EXP_NAME,
+    make_inference_dataroot(testA, testB),
+    os.path.join(results_dir, "g2m"),
+    "AtoB", DEVICE,
+)
+m2g_fakes = run_inference(
+    cut_dir, EXP_NAME,
+    make_inference_dataroot(testB, testA),
+    os.path.join(results_dir, "m2g"),
+    "BtoA", DEVICE,
+)
 
 if RUN_TRANSLATE_VIDEO:
-    baseline_video = translate_test_video(cut_dir, exp_game2movie, TEST_PATH, SAVE_DIR, DEVICE)
+    baseline_video = translate_test_video(cut_dir, EXP_NAME, TEST_PATH, SAVE_DIR, DEVICE)
     print(f"Baseline video → {baseline_video}")
 else:
     baseline_video = None
     print("Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
 
 # %%
-import glob, json
-from src.baseline_model import run_inference, make_inference_dataroot, compute_metrics
+metrics = {
+    "game→movie": compute_metrics(
+        testB,
+        os.path.join(results_dir, "g2m", "fake"),
+        glob.glob(os.path.join(testA, "*.jpg")),
+        g2m_fakes,
+        DEVICE,
+    ),
+    "movie→game": compute_metrics(
+        testA,
+        os.path.join(results_dir, "m2g", "fake"),
+        glob.glob(os.path.join(testB, "*.jpg")),
+        m2g_fakes,
+        DEVICE,
+    ),
+}
+for direction, vals in metrics.items():
+    print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
 
-results_dir = os.path.join(SAVE_DIR, "2_1_results")
+viz_dir = os.path.join(SAVE_DIR, "2_1_viz")
+os.makedirs(viz_dir, exist_ok=True)
+with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
+    json.dump(metrics, f, indent=2)
 
-def checkpoint_exists(cut_dir, exp_name):
-    return os.path.exists(os.path.join(cut_dir, "checkpoints", exp_name, "latest_net_G.pth"))
+save_comparison_grid(
+    glob.glob(os.path.join(testA, "*.jpg")),
+    g2m_fakes,
+    "game → movie (CUT)",
+    os.path.join(viz_dir, "comparison_game2movie.png"),
+)
+save_comparison_grid(
+    glob.glob(os.path.join(testB, "*.jpg")),
+    m2g_fakes,
+    "movie → game (CUT)",
+    os.path.join(viz_dir, "comparison_movie2game.png"),
+)
 
-g2m_ready = checkpoint_exists(cut_dir, exp_game2movie)
-m2g_ready = checkpoint_exists(cut_dir, exp_movie2game)
-
-if g2m_ready and m2g_ready:
-    g2m_fakes = run_inference(cut_dir, exp_game2movie,
-                              make_inference_dataroot(testA, testB),
-                              os.path.join(results_dir, "g2m"), "AtoB", DEVICE)
-    m2g_fakes = run_inference(cut_dir, exp_movie2game,
-                              make_inference_dataroot(testB, testA),
-                              os.path.join(results_dir, "m2g"), "AtoB", DEVICE)
-
-    metrics = {
-        "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"),
-                                      glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes, DEVICE),
-        "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake"),
-                                      glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes, DEVICE),
-    }
-    for direction, vals in metrics.items():
-        print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
-
-    viz_dir = os.path.join(SAVE_DIR, "2_1_viz")
-    os.makedirs(viz_dir, exist_ok=True)
-    with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
-        json.dump(metrics, f, indent=2)
-
-    from src.baseline_model import save_comparison_grid, save_umap
-
-    save_comparison_grid(glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes,
-                         "game → movie (CUT)", os.path.join(viz_dir, "comparison_game2movie.png"))
-    save_comparison_grid(glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes,
-                         "movie → game (CUT)", os.path.join(viz_dir, "comparison_movie2game.png"))
-
-    save_umap(
-        [glob.glob(os.path.join(testA, "*.jpg")),
-         glob.glob(os.path.join(testB, "*.jpg")),
-         g2m_fakes],
-        ["game (real)", "movie (real)", "game→movie (fake)"],
-        ["steelblue", "tomato", "mediumpurple"],
-        "VGG feature UMAP: game→movie",
-        os.path.join(viz_dir, "umap_game2movie.png"),
-        device=DEVICE,
-    )
-    save_umap(
-        [glob.glob(os.path.join(testA, "*.jpg")),
-         glob.glob(os.path.join(testB, "*.jpg")),
-         m2g_fakes],
-        ["game (real)", "movie (real)", "movie→game (fake)"],
-        ["steelblue", "tomato", "seagreen"],
-        "VGG feature UMAP: movie→game",
-        os.path.join(viz_dir, "umap_movie2game.png"),
-        device=DEVICE,
-    )
-else:
-    print("CUT checkpoints not found — skipping inference. Set RUN_TRAIN_CUT=True and re-run.")
+save_umap(
+    [
+        glob.glob(os.path.join(testA, "*.jpg")),
+        glob.glob(os.path.join(testB, "*.jpg")),
+        g2m_fakes,
+    ],
+    ["game (real)", "movie (real)", "game→movie (fake)"],
+    ["steelblue", "tomato", "mediumpurple"],
+    "VGG feature UMAP: game→movie",
+    os.path.join(viz_dir, "umap_game2movie.png"),
+    device=DEVICE,
+)
+save_umap(
+    [
+        glob.glob(os.path.join(testA, "*.jpg")),
+        glob.glob(os.path.join(testB, "*.jpg")),
+        m2g_fakes,
+    ],
+    ["game (real)", "movie (real)", "movie→game (fake)"],
+    ["steelblue", "tomato", "seagreen"],
+    "VGG feature UMAP: movie→game",
+    os.path.join(viz_dir, "umap_movie2game.png"),
+    device=DEVICE,
+)
 
 
 # %% [markdown]
 # ## 2.2 Enhanced model
 
 # %%
+# 1. use data from 1.3 & same pretrained model from 2.1
+# 2. use temporal enhancement

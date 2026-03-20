@@ -83,7 +83,7 @@ if [[ "$need_dino_download" -eq 1 ]]; then
   fi
 fi
 
-# CUT repository
+# (forked & mildly modified) CUT repository
 CUT_REPO_URL="https://github.com/Theosdoor/contrastive-unpaired-translation.git"
 CUT_DST="$EXTERNAL_DIR/contrastive-unpaired-translation"
 

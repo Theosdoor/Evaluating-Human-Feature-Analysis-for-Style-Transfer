@@ -1,16 +1,23 @@
 """
 src/baseline_model.py
-Question 2.1 — Image Model Deployment (CUT-based baseline)
+Question 2.1 — Image Model Deployment (pretrained CUT, zero-shot)
+
+Downloads and applies a pretrained CUT model to game/movie frames with no fine-tuning.
 
 Public API (called from nb_main.py):
+    ensure_pretrained_models(cut_dir)
     build_frame_dataset(selected_detections, train_paths, data_dir, n_per_domain)
-    train_cut(cut_dir, data_dir, exp_name, direction, device, n_epochs, n_epochs_decay, batch_size)
     run_inference(cut_dir, exp_name, input_dataroot, results_dir, direction, device)
-    translate_test_video(cut_dir, exp_name, test_path, save_dir, device)  -> video_path
-    compute_metrics(real_dir, fake_dir, input_paths, fake_paths, device)  -> dict
+    translate_test_video(cut_dir, exp_name, test_path, save_dir, device)
+    compute_metrics(real_dir, fake_dir, input_paths, fake_paths, device)
     save_comparison_grid(input_paths, fake_paths, title, out_path, n)
-    save_umap(groups, labels, colours, title, out_path)
-    make_inference_dataroot(domain_dir, partner_dir)                       -> tmp_path
+    save_umap(groups, labels, colours, title, out_path, device)
+    make_inference_dataroot(domain_dir, partner_dir)
+
+Available pretrained models:
+    cityscapes_cut_pretrained, cityscapes_fastcut_pretrained,
+    horse2zebra_cut_pretrained, horse2zebra_fastcut_pretrained,
+    cat2dog_cut_pretrained, cat2dog_fastcut_pretrained
 """
 
 import glob
@@ -28,11 +35,48 @@ from cleanfid import fid
 from tqdm import tqdm
 
 
+PRETRAINED_URL = "http://efrosgans.eecs.berkeley.edu/CUT/pretrained_models.tar"
+
+PRETRAINED_MODELS = [
+    "cityscapes_cut_pretrained",
+    "cityscapes_fastcut_pretrained",
+    "horse2zebra_cut_pretrained",
+    "horse2zebra_fastcut_pretrained",
+    "cat2dog_cut_pretrained",
+    "cat2dog_fastcut_pretrained",
+]
+
+
 # ---------------------------------------------------------------------------
-# Dataset preparation
+# Pretrained model setup
 # ---------------------------------------------------------------------------
 
-def build_frame_dataset(selected_detections, train_paths, data_dir, n_per_domain=1000):
+def ensure_pretrained_models(cut_dir: str):
+    """Download and extract pretrained CUT checkpoints if not already present."""
+    tar_path = os.path.join(cut_dir, "pretrained_models.tar")
+    probe    = os.path.join(cut_dir, "checkpoints", "horse2zebra_cut_pretrained", "latest_net_G.pth")
+
+    if not os.path.exists(tar_path):
+        print(f"Downloading pretrained archive → {tar_path}")
+        subprocess.run(["wget", "-O", tar_path, PRETRAINED_URL], check=True)
+
+    if not os.path.exists(probe):
+        print("Extracting pretrained archive…")
+        subprocess.run(["tar", "-xf", tar_path], check=True, cwd=cut_dir)
+    else:
+        print("Pretrained checkpoints already present.")
+
+
+# ---------------------------------------------------------------------------
+# Dataset preparation (full frames at detection timestamps)
+# ---------------------------------------------------------------------------
+
+def build_frame_dataset(
+    selected_detections: list[dict],
+    train_paths: list[str],
+    data_dir: str,
+    n_per_domain: int = 500,
+) -> tuple[str, str, str, str]:
     """
     Extract full frames at the timestamps from 1.1 and organise into
     CUT's trainA (game) / trainB (movie) layout.
@@ -48,7 +92,7 @@ def build_frame_dataset(selected_detections, train_paths, data_dir, n_per_domain
     testA  = os.path.join(data_dir, "testA")
     testB  = os.path.join(data_dir, "testB")
 
-    print("Building CUT frame dataset…")
+    print("Building frame dataset…")
     _extract_frames(selected_detections, game_paths,  trainA, n_per_domain)
     _extract_frames(selected_detections, movie_paths, trainB, n_per_domain)
 
@@ -68,10 +112,10 @@ def _extract_frames(detections, video_paths_for_domain, output_dir, n_frames):
         return
 
     domain_dets = [d for d in detections if d["video_path"] in video_paths_for_domain]
-    step = max(1, len(domain_dets) // n_frames)
+    step        = max(1, len(domain_dets) // n_frames)
     domain_dets = domain_dets[::step][:n_frames]
 
-    by_video = {}
+    by_video: dict[str, list] = {}
     for det in domain_dets:
         by_video.setdefault(det["video_path"], []).append(det)
 
@@ -94,18 +138,20 @@ def _extract_frames(detections, video_paths_for_domain, output_dir, n_frames):
             ret, frame = cap.read()
             if not ret:
                 continue
-            cur += 1
+            cur  += 1
             tag   = os.path.splitext(os.path.basename(vpath))[0]
             fname = f"{tag}_f{target:06d}.jpg"
-            cv2.imwrite(os.path.join(output_dir, fname),
-                        cv2.resize(frame, (286, 286)),
-                        [cv2.IMWRITE_JPEG_QUALITY, 92])
+            cv2.imwrite(
+                os.path.join(output_dir, fname),
+                cv2.resize(frame, (286, 286)),
+                [cv2.IMWRITE_JPEG_QUALITY, 92],
+            )
             saved += 1
         cap.release()
     print(f"  Saved {saved} frames → {output_dir}")
 
 
-def _make_held_out_split(src_dir, dst_dir, n=200):
+def _make_held_out_split(src_dir: str, dst_dir: str, n: int = 200):
     os.makedirs(dst_dir, exist_ok=True)
     if len(glob.glob(os.path.join(dst_dir, "*.jpg"))) >= n:
         return
@@ -114,10 +160,9 @@ def _make_held_out_split(src_dir, dst_dir, n=200):
         shutil.copy(f, os.path.join(dst_dir, os.path.basename(f)))
 
 
-def make_inference_dataroot(domain_dir, partner_dir):
+def make_inference_dataroot(domain_dir: str, partner_dir: str) -> str:
     """
-    Create a temporary directory with trainA → domain_dir and trainB → partner_dir
-    symlinks, as required by CUT's dataloader.
+    Create a temp directory with trainA/trainB symlinks as required by CUT's dataloader.
     """
     tmp = tempfile.mkdtemp()
     os.symlink(os.path.abspath(domain_dir),  os.path.join(tmp, "trainA"))
@@ -126,65 +171,22 @@ def make_inference_dataroot(domain_dir, partner_dir):
 
 
 # ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
-
-def train_cut(
-    cut_dir,
-    data_dir,
-    exp_name,
-    direction,
-    device,
-    n_epochs=100,
-    n_epochs_decay=100,
-    batch_size=4,
-):
-    """
-    Launch CUT training via subprocess.  Returns the checkpoint directory path.
-    Skips if latest_net_G.pth already exists.
-
-    direction : 'AtoB' (game→movie) or 'BtoA' (movie→game)
-    """
-    ckpt_dir = os.path.join(cut_dir, "checkpoints", exp_name)
-    latest   = os.path.join(ckpt_dir, "latest_net_G.pth")
-
-    if os.path.exists(latest):
-        print(f"  Checkpoint exists, skipping training: {exp_name}")
-        return ckpt_dir
-
-    gpu_ids = "0" if device == "cuda" else "-1"
-    cmd = [
-        sys.executable, os.path.join(cut_dir, "train.py"),
-        "--dataroot",       data_dir,
-        "--name",           exp_name,
-        "--model",          "cut",
-        "--CUT_mode",       "CUT",
-        "--direction",      direction,
-        "--n_epochs",       str(n_epochs),
-        "--n_epochs_decay", str(n_epochs_decay),
-        "--batch_size",     str(batch_size),
-        "--load_size",      "286",
-        "--crop_size",      "256",
-        "--gpu_ids",        gpu_ids,
-        "--checkpoints_dir",os.path.join(cut_dir, "checkpoints"),
-        "--no_html",
-        "--display_id",     "0",
-        "--nce_idt",        "True",
-        "--save_epoch_freq","10",
-    ]
-    print(f"  Training CUT ({direction})…")
-    subprocess.run(cmd, check=True, cwd=cut_dir)
-    return ckpt_dir
-
-
-# ---------------------------------------------------------------------------
 # Inference
 # ---------------------------------------------------------------------------
 
-def run_inference(cut_dir, exp_name, input_dataroot, results_dir, direction, device):
+def run_inference(
+    cut_dir: str,
+    exp_name: str,
+    input_dataroot: str,
+    results_dir: str,
+    direction: str,
+    device: str,
+) -> list[str]:
     """
-    Run CUT test.py on input_dataroot.  Copies fake_B outputs into
-    results_dir/fake/ and returns a sorted list of those paths.
+    Run CUT test.py on input_dataroot using a pretrained (or fine-tuned) checkpoint.
+    Copies fake_B outputs into results_dir/fake/ and returns a sorted list of those paths.
+
+    direction : 'AtoB' (game→movie) or 'BtoA' (movie→game)
     """
     fake_dir = os.path.join(results_dir, "fake")
     os.makedirs(fake_dir, exist_ok=True)
@@ -194,11 +196,9 @@ def run_inference(cut_dir, exp_name, input_dataroot, results_dir, direction, dev
         print(f"  Inference cache hit: {fake_dir} ({len(existing)} images)")
         return existing
 
-    # CUT expects either {trainA, trainB} with --phase train or
-    # {testA, testB} with --phase test. Pick whichever split exists.
-    phase = "test" if os.path.isdir(os.path.join(input_dataroot, "testA")) else "train"
-
+    phase   = "test" if os.path.isdir(os.path.join(input_dataroot, "testA")) else "train"
     gpu_ids = "0" if device == "cuda" else "-1"
+
     cmd = [
         sys.executable, os.path.join(cut_dir, "test.py"),
         "--dataroot",        input_dataroot,
@@ -218,18 +218,34 @@ def run_inference(cut_dir, exp_name, input_dataroot, results_dir, direction, dev
     subprocess.run(cmd, check=True, cwd=cut_dir)
 
     raw_dir = os.path.join(cut_dir, "results", exp_name, f"{phase}_latest", "images")
-    for p in glob.glob(os.path.join(raw_dir, "*fake_B*")):
-        dst = os.path.join(fake_dir, os.path.basename(p).replace("_fake_B", ""))
+
+    # CUT writes to flat files OR subdirectories depending on version
+    subdir = os.path.join(raw_dir, "fake_B" if direction == "AtoB" else "fake_A")
+    if os.path.isdir(subdir):
+        sources = sorted(glob.glob(os.path.join(subdir, "*.jpg")))
+    else:
+        sources = sorted(glob.glob(os.path.join(raw_dir, "*fake_B*"
+                                                if direction == "AtoB" else "*fake_A*")))
+
+    for p in sources:
+        dst = os.path.join(fake_dir, os.path.basename(p).replace("_fake_B", "").replace("_fake_A", ""))
         if not os.path.exists(dst):
             shutil.copy(p, dst)
 
     return sorted(glob.glob(os.path.join(fake_dir, "*.jpg")))
 
 
-def translate_test_video(cut_dir, exp_name, test_path, save_dir, device):
+def translate_test_video(
+    cut_dir: str,
+    exp_name: str,
+    test_path: str,
+    save_dir: str,
+    device: str,
+    output_name: str = "baseline_model.mp4",
+) -> str:
     """
-    Extract every frame of test_path, translate game→movie with CUT,
-    and write the result to save_dir/baseline_model.mp4.
+    Extract every frame of test_path, translate game→movie with a pretrained CUT model,
+    and write the result to save_dir/<output_name>.
 
     Returns the output video path.
     """
@@ -240,25 +256,23 @@ def translate_test_video(cut_dir, exp_name, test_path, save_dir, device):
     fps   = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    frame_paths = []
     existing = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
     if len(existing) >= total > 0:
         print(f"  Test frames already extracted ({len(existing)}), skipping.")
         frame_paths = existing
         cap.release()
     else:
+        frame_paths = []
         for i in tqdm(range(total), desc="Extracting test frames"):
             ret, frame = cap.read()
             if not ret:
                 break
             p = os.path.join(frames_dir, f"frame_{i:05d}.jpg")
-            cv2.imwrite(p, cv2.resize(frame, (256, 256)),
-                        [cv2.IMWRITE_JPEG_QUALITY, 95])
+            cv2.imwrite(p, cv2.resize(frame, (256, 256)), [cv2.IMWRITE_JPEG_QUALITY, 95])
             frame_paths.append(p)
         cap.release()
         print(f"  {len(frame_paths)} test frames extracted")
 
-    # Build a temporary dataroot for CUT inference
     infer_root = os.path.join(save_dir, "2_1_test_infer_dataroot")
     trainA_tmp = os.path.join(infer_root, "trainA")
     trainB_tmp = os.path.join(infer_root, "trainB")
@@ -272,7 +286,7 @@ def translate_test_video(cut_dir, exp_name, test_path, save_dir, device):
     if not glob.glob(os.path.join(trainB_tmp, "*.jpg")):
         shutil.copy(frame_paths[0], os.path.join(trainB_tmp, "dummy.jpg"))
 
-    print("Translating test frames (game→movie)…")
+    print(f"Translating test frames with {exp_name} (game→movie)…")
     fakes = run_inference(
         cut_dir, exp_name, infer_root,
         os.path.join(save_dir, "2_1_results", "test_g2m"),
@@ -280,7 +294,7 @@ def translate_test_video(cut_dir, exp_name, test_path, save_dir, device):
     )
     print(f"  {len(fakes)} translated frames")
 
-    video_path = os.path.join(save_dir, "baseline_model.mp4")
+    video_path = os.path.join(save_dir, output_name)
     fakes_sorted = sorted(fakes)
     if fakes_sorted:
         sample = cv2.imread(fakes_sorted[0])
@@ -288,14 +302,14 @@ def translate_test_video(cut_dir, exp_name, test_path, save_dir, device):
         writer = cv2.VideoWriter(
             video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
         )
-        for fp in tqdm(fakes_sorted, desc="Writing baseline_model.mp4"):
+        for fp in tqdm(fakes_sorted, desc=f"Writing {output_name}"):
             frame = cv2.imread(fp)
             if frame is not None:
                 writer.write(frame)
         writer.release()
-        print(f"  Baseline video → {video_path}")
+        print(f"  Video → {video_path}")
     else:
-        print("  Warning: no translated frames — video not written.")
+        print("  Warning: no translated frames found — video not written.")
 
     return video_path
 
@@ -304,60 +318,46 @@ def translate_test_video(cut_dir, exp_name, test_path, save_dir, device):
 # Metrics
 # ---------------------------------------------------------------------------
 
-def compute_metrics(real_dir, fake_dir, input_paths, fake_paths, device, num_workers=2):
+def compute_metrics(
+    real_dir: str,
+    fake_dir: str,
+    input_paths: list[str],
+    fake_paths: list[str],
+    device: str,
+    num_workers: int = 2,
+) -> dict:
     """
-    Compute FID, KID (via torch-fidelity) and LPIPS (vs. input) for one direction.
+    Compute FID, KID (via clean-fid) and LPIPS (vs. source input) for one direction.
 
-    real_dir    : directory of real target-domain frames (for FID/KID)
-    fake_dir    : directory of translated frames         (for FID/KID)
-    input_paths : list of source-domain image paths      (for LPIPS)
-    fake_paths  : list of translated image paths         (for LPIPS, same order)
+    real_dir    : real target-domain frames (FID/KID reference)
+    fake_dir    : translated frames         (FID/KID query)
+    input_paths : source-domain images      (LPIPS reference, same order as fake_paths)
+    fake_paths  : translated images         (LPIPS query)
 
-    num_workers : DataLoader worker count for CleanFID feature extraction.
-
-    Returns a dict with keys FID, KID, LPIPS.
+    Returns dict with keys FID, KID, LPIPS.
     """
-    if num_workers is None:
-        cpu_count = os.cpu_count() or 1
-        num_workers = max(0, min(2, cpu_count))
-
     print("  Computing FID…")
-    fid_score = fid.compute_fid(
-        real_dir,
-        fake_dir,
-        device=device,
-        num_workers=num_workers,
-        verbose=False,
-    )
+    fid_score = fid.compute_fid(real_dir, fake_dir, device=device,
+                                num_workers=num_workers, verbose=False)
     print("  Computing KID…")
-    kid_score = fid.compute_kid(
-        real_dir,
-        fake_dir,
-        device=device,
-        num_workers=num_workers,
-        verbose=False,
-    )
-    fid_kid = {
-        "frechet_inception_distance": fid_score,
-        "kernel_inception_distance_mean": kid_score,
-    }
+    kid_score = fid.compute_kid(real_dir, fake_dir, device=device,
+                                num_workers=num_workers, verbose=False)
 
     print("  Computing LPIPS…")
     loss_fn = lpips_lib.LPIPS(net="vgg").to(device)
     scores  = []
-    pairs   = list(zip(sorted(input_paths), sorted(fake_paths)))[:200]
-    for rp, fp in tqdm(pairs, desc="  LPIPS", leave=False):
+    for rp, fp in tqdm(list(zip(sorted(input_paths), sorted(fake_paths)))[:200],
+                       desc="  LPIPS", leave=False):
         ri = lpips_lib.im2tensor(lpips_lib.load_image(rp)).to(device)
         fi = lpips_lib.im2tensor(lpips_lib.load_image(fp)).to(device)
         if ri.shape != fi.shape:
             fi = torch.nn.functional.interpolate(
-                fi, size=ri.shape[2:], mode="bilinear", align_corners=False
-            )
+                fi, size=ri.shape[2:], mode="bilinear", align_corners=False)
         scores.append(loss_fn(ri, fi).item())
 
     return {
-        "FID":               fid_kid["frechet_inception_distance"],
-        "KID":               fid_kid["kernel_inception_distance_mean"],
+        "FID":               fid_score,
+        "KID":               kid_score,
         "LPIPS (vs. input)": float(np.mean(scores)),
     }
 
@@ -366,10 +366,14 @@ def compute_metrics(real_dir, fake_dir, input_paths, fake_paths, device, num_wor
 # Visualisation
 # ---------------------------------------------------------------------------
 
-def save_comparison_grid(input_paths, fake_paths, title, out_path, n=10):
-    """
-    Save a side-by-side grid of n [input | translated] pairs.
-    """
+def save_comparison_grid(
+    input_paths: list[str],
+    fake_paths: list[str],
+    title: str,
+    out_path: str,
+    n: int = 10,
+):
+    """Save a side-by-side grid of n [input | translated] pairs."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -392,7 +396,15 @@ def save_comparison_grid(input_paths, fake_paths, title, out_path, n=10):
     print(f"  Saved → {out_path}")
 
 
-def save_umap(groups, labels, colours, title, out_path, n_each=150, device="cpu"):
+def save_umap(
+    groups: list[list[str]],
+    labels: list[str],
+    colours: list[str],
+    title: str,
+    out_path: str,
+    n_each: int = 150,
+    device: str = "cpu",
+):
     """
     Compute VGG16 features for each group of image paths and plot a UMAP.
 
@@ -430,7 +442,7 @@ def save_umap(groups, labels, colours, title, out_path, n_each=150, device="cpu"
     print(f"  Saved → {out_path}")
 
 
-def _vgg_features(image_paths, device, batch_size=32):
+def _vgg_features(image_paths: list[str], device: str, batch_size: int = 32) -> np.ndarray:
     import torchvision.models as tvm
     import torchvision.transforms as T
 
@@ -444,14 +456,10 @@ def _vgg_features(image_paths, device, batch_size=32):
     feats = []
     with torch.no_grad():
         for i in range(0, len(image_paths), batch_size):
-            batch = []
-            for p in image_paths[i : i + batch_size]:
-                img = cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB)
-                batch.append(tfm(img))
-            t = torch.stack(batch).to(device)
+            batch = [tfm(cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB))
+                     for p in image_paths[i: i + batch_size]]
+            t   = torch.stack(batch).to(device)
             out = vgg(t)
             out = torch.nn.functional.adaptive_avg_pool2d(out, 1).squeeze(-1).squeeze(-1)
             feats.append(out.cpu().numpy())
     return np.concatenate(feats, axis=0)
-
-
