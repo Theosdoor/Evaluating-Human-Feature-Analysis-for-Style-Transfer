@@ -219,20 +219,43 @@ def run_inference(
 
     raw_dir = os.path.join(cut_dir, "results", exp_name, f"{phase}_latest", "images")
 
-    # CUT writes to flat files OR subdirectories depending on version
-    subdir = os.path.join(raw_dir, "fake_B" if direction == "AtoB" else "fake_A")
+    # CUT writes to flat files OR subdirectories depending on version.
+    # Output extension varies (.jpg or .png) across CUT versions.
+    fake_tag = "fake_B" if direction == "AtoB" else "fake_A"
+    subdir = os.path.join(raw_dir, fake_tag)
     if os.path.isdir(subdir):
-        sources = sorted(glob.glob(os.path.join(subdir, "*.jpg")))
+        sources = [
+            p for ext in ("*.jpg", "*.png")
+            for p in glob.glob(os.path.join(subdir, ext))
+        ]
+        sources = sorted(set(sources))
     else:
-        sources = sorted(glob.glob(os.path.join(raw_dir, "*fake_B*"
-                                                if direction == "AtoB" else "*fake_A*")))
+        sources = [
+            p for ext in ("*.jpg", "*.png")
+            for p in glob.glob(os.path.join(raw_dir, f"*{fake_tag}*.{ext.lstrip('*.')}"))
+        ]
+        sources = sorted(set(sources))
+
+    if not sources:
+        print(f"  WARNING: no fake outputs found in {raw_dir} for direction={direction}.")
+        print(f"  raw_dir contents: {os.listdir(raw_dir) if os.path.isdir(raw_dir) else '(does not exist)'}")
 
     for p in sources:
-        dst = os.path.join(fake_dir, os.path.basename(p).replace("_fake_B", "").replace("_fake_A", ""))
+        # Normalise to .jpg regardless of source extension
+        stem = os.path.splitext(os.path.basename(p))[0]
+        stem = stem.replace(f"_{fake_tag}", "")
+        dst  = os.path.join(fake_dir, stem + ".jpg")
         if not os.path.exists(dst):
-            shutil.copy(p, dst)
+            img = cv2.imread(p)
+            if img is not None:
+                cv2.imwrite(dst, img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            else:
+                shutil.copy(p, dst)
 
-    return sorted(glob.glob(os.path.join(fake_dir, "*.jpg")))
+    result = sorted(glob.glob(os.path.join(fake_dir, "*.jpg")))
+    if not result:
+        print(f"  WARNING: fake_dir is empty after inference: {fake_dir}")
+    return result
 
 
 def translate_test_video(
@@ -336,6 +359,16 @@ def compute_metrics(
 
     Returns dict with keys FID, KID, LPIPS.
     """
+    real_images = glob.glob(os.path.join(real_dir, "*"))
+    fake_images = glob.glob(os.path.join(fake_dir, "*"))
+    if not real_images:
+        raise RuntimeError(f"compute_metrics: real_dir is empty: {real_dir}")
+    if not fake_images:
+        raise RuntimeError(
+            f"compute_metrics: fake_dir is empty: {fake_dir}\n"
+            f"Run inference likely produced no outputs — check run_inference warnings above."
+        )
+
     print("  Computing FID…")
     fid_score = fid.compute_fid(real_dir, fake_dir, device=device,
                                 num_workers=num_workers, verbose=False)
