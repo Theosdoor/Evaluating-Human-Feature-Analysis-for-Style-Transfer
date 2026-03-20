@@ -112,6 +112,17 @@ def _extract_frames(detections, video_paths_for_domain, output_dir, n_frames):
         return
 
     domain_dets = [d for d in detections if d["video_path"] in video_paths_for_domain]
+    # Deduplicate by (video_path, frame_num) — multiple people in one frame
+    # would otherwise produce overwriting filename collisions, keeping the
+    # output below n_frames and preventing the cache from ever completing.
+    seen = set()
+    deduped = []
+    for d in domain_dets:
+        key = (d["video_path"], d["frame_num"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(d)
+    domain_dets = deduped
     step        = max(1, len(domain_dets) // n_frames)
     domain_dets = domain_dets[::step][:n_frames]
 
@@ -272,7 +283,7 @@ def translate_test_video(
 
     Returns the output video path.
     """
-    frames_dir = os.path.join(save_dir, "2_1_test_frames")
+    frames_dir = os.path.join(save_dir, "test_frames")
     os.makedirs(frames_dir, exist_ok=True)
 
     cap   = cv2.VideoCapture(test_path)
@@ -296,7 +307,7 @@ def translate_test_video(
         cap.release()
         print(f"  {len(frame_paths)} test frames extracted")
 
-    infer_root = os.path.join(save_dir, "2_1_test_infer_dataroot")
+    infer_root = os.path.join(save_dir, "test_infer_dataroot")
     trainA_tmp = os.path.join(infer_root, "trainA")
     trainB_tmp = os.path.join(infer_root, "trainB")
     os.makedirs(trainA_tmp, exist_ok=True)
@@ -312,7 +323,7 @@ def translate_test_video(
     print(f"Translating test frames with {exp_name} (game→movie)…")
     fakes = run_inference(
         cut_dir, exp_name, infer_root,
-        os.path.join(save_dir, "2_1_results", "test_g2m"),
+        os.path.join(save_dir, "results", "test_g2m"),
         "AtoB", device,
     )
     print(f"  {len(fakes)} translated frames")

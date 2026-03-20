@@ -347,17 +347,20 @@ val_game, val_movie     = flat_paths_by_domain(split['val'])
 
 
 cut_dir = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
-data_2_1 = os.path.join(SAVE_DIR, "cut_data")
+q2_1_dir = os.path.join(SAVE_DIR, "q2_1")
 
 ensure_pretrained_models(cut_dir)
 
 n_frames_per_domain = 500
 
 trainA, trainB, testA, testB = build_frame_dataset(
-    selected_detections, [d["path"] for d in TRAIN_DATA], data_2_1, n_frames_per_domain
+    selected_detections,
+    [d["path"] for d in TRAIN_DATA],
+    os.path.join(q2_1_dir, "cut_data"),
+    n_frames_per_domain,
 )
 
-results_dir = os.path.join(SAVE_DIR, "2_1_results")
+results_dir = os.path.join(q2_1_dir, "results")
 
 g2m_fakes = run_inference(
     cut_dir, EXP_NAME,
@@ -373,7 +376,7 @@ m2g_fakes = run_inference(
 )
 
 if RUN_TRANSLATE_VIDEO:
-    baseline_video = translate_test_video(cut_dir, EXP_NAME, TEST_PATH, SAVE_DIR, DEVICE)
+    baseline_video = translate_test_video(cut_dir, EXP_NAME, TEST_PATH, q2_1_dir, DEVICE)
     print(f"Baseline video → {baseline_video}")
 else:
     baseline_video = None
@@ -399,7 +402,7 @@ metrics = {
 for direction, vals in metrics.items():
     print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
 
-viz_dir = os.path.join(SAVE_DIR, "2_1_viz")
+viz_dir = os.path.join(q2_1_dir, "viz")
 os.makedirs(viz_dir, exist_ok=True)
 with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
     json.dump(metrics, f, indent=2)
@@ -451,7 +454,8 @@ save_umap(
 # 2. keep the same pretrained CUT model as 2.1 (no retraining)
 # 3. use temporal enhancement (deferred for now)
 
-data_2_2 = os.path.join(SAVE_DIR, "2_2_data")
+q2_2_dir = os.path.join(SAVE_DIR, "q2_2")
+data_2_2 = os.path.join(q2_2_dir, "data")
 trainA = os.path.join(data_2_2, "trainA")
 trainB = os.path.join(data_2_2, "trainB")
 testA = os.path.join(data_2_2, "testA")
@@ -481,7 +485,7 @@ print(f"  trainB (movie): +{_stage_paths(train_movie, trainB)}")
 print(f"  testA (game):   +{_stage_paths(val_game if val_game else train_game[:200], testA)}")
 print(f"  testB (movie):  +{_stage_paths(val_movie if val_movie else train_movie[:200], testB)}")
 
-results_dir = os.path.join(SAVE_DIR, "2_2_results")
+results_dir = os.path.join(q2_2_dir, "results")
 
 g2m_fakes = run_inference(
     cut_dir, EXP_NAME,
@@ -501,7 +505,7 @@ if RUN_TRANSLATE_VIDEO:
         cut_dir,
         EXP_NAME,
         TEST_PATH,
-        SAVE_DIR,
+        q2_2_dir,
         DEVICE,
         output_name="enhanced_model.mp4",
     )
@@ -530,7 +534,7 @@ metrics = {
 for direction, vals in metrics.items():
     print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
 
-viz_dir = os.path.join(SAVE_DIR, "2_2_viz")
+viz_dir = os.path.join(q2_2_dir, "viz")
 os.makedirs(viz_dir, exist_ok=True)
 with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
     json.dump(metrics, f, indent=2)
