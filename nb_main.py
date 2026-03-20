@@ -255,8 +255,11 @@ else:
         pose_model_path = os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
         device          = DEVICE,
         lr              = 3e-4,
-        epochs          = 150,
+        epochs          = 300,
         hidden          = 128,
+        dropout         = 0.1,
+        batch_size      = 128,
+        exclude_classes   = ['others'],
     )
 
 total_classified = sum(summary.values())
@@ -270,7 +273,7 @@ from src.data import get_data_split, flat_paths, flat_paths_by_domain
 split = get_data_split(
     gcn_save_path,                  # use GCN results as the classification source
     train_split=1.0,
-    exclude_classes=['others'],
+    exclude_classes=['others']
 )
 
 train_game, train_movie = flat_paths_by_domain(split['train'])

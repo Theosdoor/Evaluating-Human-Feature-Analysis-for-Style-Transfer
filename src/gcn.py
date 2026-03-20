@@ -447,7 +447,7 @@ def train_gcn(
     ).to(device)
 
     model     = PoseGCN(hidden=hidden, dropout=dropout).to(device)
-    optimiser = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    optimiser = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=epochs)
     criterion = nn.CrossEntropyLoss(weight=weights)
 
@@ -629,6 +629,7 @@ def run_gcn_pipeline(
     batch_size: int    = 32,
     train_split: float = 0.8,
     seed: int          = 42,
+    exclude_classes: list[str] | None = None,
     # Keypoint cache
     force_reextract_keypoints: bool = False,
 ) -> tuple[dict, dict]:
@@ -645,6 +646,7 @@ def run_gcn_pipeline(
         save_dir       : Output dir for GCN results (output/gcn_results/<run>/).
         pose_model_path: Path to YOLO pose model weights.
         device         : "cuda" | "mps" | "cpu".
+        exclude_classes: Optional class names to exclude from training labels.
         force_reextract_keypoints: Re-run pose inference even if .npz exists.
 
     Returns:
@@ -668,6 +670,22 @@ def run_gcn_pipeline(
         raise ValueError(f"cls_source must be 'manual' or 'rule', got '{cls_source}'")
 
     print(f"[GCN] {len(labelled)} labelled patches loaded")
+    if exclude_classes:
+        excluded_set = set(exclude_classes)
+        before_count = len(labelled)
+        labelled = {
+            fname: cls
+            for fname, cls in labelled.items()
+            if cls not in excluded_set
+        }
+        print(
+            f"[GCN] Excluded {before_count - len(labelled)} labelled patches "
+            f"from classes: {sorted(excluded_set)}"
+        )
+        if not labelled:
+            raise ValueError(
+                "No labelled patches remain after applying exclude_classes"
+            )
 
     # --- 2. Load or extract keypoints ---
     npz_path = os.path.join(all_patches_dir, "_keypoints.npz")
