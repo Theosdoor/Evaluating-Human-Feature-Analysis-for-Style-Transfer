@@ -99,7 +99,13 @@ GCN_LABEL_SOURCE = "manual"
 
 # Set to a run name under output/gcn_results/ to skip GCN training+inference.
 RELOAD_GCN = None
-# RELOAD_GCN = "20260314-195748"
+# RELOAD_GCN = "20260320-162455" 
+# Val accuracy per class for manual annotations:
+    # full_body_front           52/72  (72.2%)
+    # full_body_back            18/19  (94.7%)
+    # head_shoulder_front       49/75  (65.3%)
+    # head_shoulder_back        19/27  (70.4%)
+    # others                    5/51  (9.8%)
 
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None
@@ -261,7 +267,7 @@ else:
         hidden          = 128,
         dropout         = 0.1,
         batch_size      = 128,
-        exclude_classes = ['others'],
+        # exclude_classes   = ['others'], # including 'others' is actually really important for generalising!!
     )
 
 total_classified = sum(summary.values())
