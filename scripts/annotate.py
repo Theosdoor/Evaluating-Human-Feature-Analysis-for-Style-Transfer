@@ -673,7 +673,7 @@ HTML = r"""
   .badge-divider { width: 100%; height: 1px; background: var(--border); margin: 1px 0; }
 
   /* ── Images ── */
-  .img-stack { width: 100%; max-width: 1400px; display: flex; flex-direction: column; gap: 6px; }
+  .img-stack { width: 100%; max-width: 1400px; display: flex; flex-direction: column; gap: 6px; position: relative; }
   .img-raw {
     width: 100%; max-height: 130px; object-fit: contain;
     border: 1px solid var(--border); border-radius: 4px; background: #000;
@@ -689,6 +689,21 @@ HTML = r"""
     letter-spacing: 0.1em; pointer-events: none;
   }
   .diag-overlay.hidden { opacity: 0; }
+
+  /* ── Centred action flash ── */
+  @keyframes flashFade { 0% { opacity: 0; transform: translate(-50%,-50%) scale(0.88); }
+    12% { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+    70% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.04); } }
+  .action-flash {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    font-family: var(--sans); font-size: 1.6rem; font-weight: 800; letter-spacing: 0.06em;
+    padding: 14px 32px; border-radius: 8px; pointer-events: none;
+    z-index: 50; white-space: nowrap;
+    opacity: 0;
+  }
+  .action-flash.ok  { background: rgba(30,52,0,0.92); color: var(--accent);  border: 1px solid #3a5200; }
+  .action-flash.cls { background: rgba(10,40,60,0.92); color: var(--accent2); border: 1px solid #1a5575; }
+  .action-flash.playing { animation: flashFade 0.65s ease forwards; }
 
   /* ── Reclassify panel — floats above sticky bar ── */
   .reclassify-panel {
@@ -805,7 +820,8 @@ HTML = r"""
       </div>
     </div>
 
-    <div class="img-stack">
+    <div class="img-stack" id="img-stack">
+      <div class="action-flash" id="action-flash"></div>
       <img class="img-raw" src="/raw/{{ fname }}" alt="raw patch">
       <div class="img-diag-wrap">
         <div class="diag-overlay" id="diag-overlay">
@@ -956,6 +972,7 @@ function applyNext(d) {
 // ── Actions ──────────────────────────────────────────────────────────────────
 function accept() {
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  showFlash("✓  ACCEPTED", "ok");
   post("/accept", { fname: FNAME_cur, label: currentLabel })
     .then(d => applyNext(d));
 }
@@ -963,14 +980,12 @@ function accept() {
 function reclassify(label) {
   document.getElementById("reclassify-panel").classList.remove("open");
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  showFlash("→  " + label, "cls");
   fetch("/invalidate", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fname: FNAME_cur }),
   })
-    .then(() => {
-      showToast("-> " + label, "ok");
-      return post("/accept", { fname: FNAME_cur, label: label, source: "manual" });
-    })
+    .then(() => post("/accept", { fname: FNAME_cur, label: label, source: "manual" }))
     .then(d => applyNext(d));
 }
 
@@ -1193,6 +1208,15 @@ function updateTracker() {
 
 updateTracker();
 setInterval(updateTracker, 3000);
+
+function showFlash(msg, type) {
+  const el = document.getElementById("action-flash");
+  if (!el) return;
+  el.textContent  = msg;
+  el.className    = "action-flash " + type;  // reset animation
+  void el.offsetWidth;                        // force reflow
+  el.classList.add("playing");
+}
 
 function showToast(msg, type) {
   const t = document.getElementById("toast");
