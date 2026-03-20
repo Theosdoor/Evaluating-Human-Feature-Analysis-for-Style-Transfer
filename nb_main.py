@@ -254,6 +254,9 @@ else:
         save_dir        = gcn_save_path,
         pose_model_path = os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
         device          = DEVICE,
+        lr              = 3e-4,
+        epochs          = 150,
+        hidden          = 128,
     )
 
 total_classified = sum(summary.values())

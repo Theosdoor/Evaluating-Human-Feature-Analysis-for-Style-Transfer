@@ -13,8 +13,7 @@ Pipeline
      features: (x_norm, y_norm, conf) — coordinates normalised by bbox dims
 3. Train a GCN on the manually/rule-labelled subset (80/20 stratified split).
    Confidence-weighted global pooling aggregates node embeddings to a graph vector.
-   # TODO: try attention pooling if more labelled data becomes available, or
-   #       if confidence-weighted pooling proves insufficiently expressive.
+   WeightedRandomSampler rebalances minority classes (fb_back, hs_back) each epoch.
 4. Run inference on all patches; patches with no pose detection → 'others'.
 5. Save results to output/gcn_results/<run>/ in the same per-class subdir format
    as init_classifications, so downstream steps (1.3, flat_paths_by_domain) are
@@ -36,6 +35,9 @@ Usage (from nb_main)
         save_dir       = gcn_save_dir,
         pose_model_path= os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
         device         = DEVICE,
+        lr             = 3e-4,
+        epochs         = 150,
+        hidden         = 128,
     )
 """
 
@@ -260,23 +262,24 @@ def load_labels_from_manual_annotations(ann_path: str) -> dict:
 
 class PoseGCN(nn.Module):
     """
-    Two-layer GCN with confidence-weighted global pooling for graph-level
+    Three-layer GCN with confidence-weighted global pooling for graph-level
     classification of pose keypoint graphs.
 
     Architecture:
-        GCNConv(3 → hidden) → ReLU → Dropout
+        GCNConv(3 → hidden)      → ReLU → Dropout
+        GCNConv(hidden → hidden) → ReLU → Dropout
         GCNConv(hidden → hidden) → ReLU → Dropout
         confidence-weighted mean pool → Linear(hidden → num_classes)
 
-    # TODO: consider attention pooling (e.g. GlobalAttention from torch_geometric)
-    #       if more labelled data becomes available and confidence-weighted pooling
-    #       proves insufficiently expressive.
+    The extra conv layer helps back-facing classes which need more structural
+    reasoning across the skeleton graph.
     """
 
-    def __init__(self, hidden: int = 64, dropout: float = 0.3):
+    def __init__(self, hidden: int = 128, dropout: float = 0.3):
         super().__init__()
         self.conv1   = GCNConv(NODE_FEAT_DIM, hidden)
         self.conv2   = GCNConv(hidden, hidden)
+        self.conv3   = GCNConv(hidden, hidden)
         self.dropout = dropout
         self.head    = nn.Linear(hidden, NUM_CLASSES)
 
@@ -291,19 +294,24 @@ class PoseGCN(nn.Module):
         if batch_vec is None:
             batch_vec = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
-        # Node embeddings
+        # Node embeddings — three GCN layers
         x = self.conv1(x, edge_index)
         x = F.relu(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.conv2(x, edge_index)
         x = F.relu(x)
         x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.conv3(x, edge_index)
+        x = F.relu(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
 
         # Confidence-weighted global pooling per graph in batch.
-        conf = x[:, 2].unsqueeze(1)                         # [num_nodes, 1]
+        # Use raw input confidence (data.x[:, 2]) so pooling weights are
+        # independent of the learned embeddings in x.
+        raw_conf = data.x[:, 2].unsqueeze(1)               # [num_nodes, 1]
 
-        weighted = x * conf
-        conf_sum = scatter(conf, batch_vec, dim=0, reduce="sum")
+        weighted = x * raw_conf
+        conf_sum = scatter(raw_conf, batch_vec, dim=0, reduce="sum")
         feat_sum = scatter(weighted, batch_vec, dim=0, reduce="sum")
         graph_emb = feat_sum / (conf_sum + 1e-8)
 
@@ -377,11 +385,11 @@ def train_gcn(
     labelled_items: list[tuple[str, str]],
     keypoints_dict: dict,
     device: str,
-    hidden: int       = 64,
+    hidden: int       = 128,
     dropout: float    = 0.3,
-    lr: float         = 1e-3,
+    lr: float         = 3e-4,
     weight_decay: float = 1e-4,
-    epochs: int       = 60,
+    epochs: int       = 150,
     batch_size: int   = 32,
     train_split: float= 0.8,
     seed: int         = 42,
@@ -406,21 +414,35 @@ def train_gcn(
     train_ds = _LabelledDataset(list(zip(f_train, l_train)), keypoints_dict)
     val_ds   = _LabelledDataset(list(zip(f_val,   l_val)),   keypoints_dict)
 
+    # Oversample minority classes so they appear proportionally each epoch.
+    # label_counts computed over the full labelled set (train+val); we want
+    # weights that are inversely proportional to per-class frequency.
+    label_counts = {cls: 0 for cls in CLASSES}
+    for l in l_train:
+        label_counts[l] += 1
+    sample_weights = [
+        1.0 / max(label_counts[IDX_TO_LABEL[item[0].item()]], 1)
+        for item in train_ds
+    ]
+    sampler = torch.utils.data.WeightedRandomSampler(
+        sample_weights, num_samples=len(train_ds), replacement=True
+    )
     train_loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,  collate_fn=_collate)
+        train_ds, batch_size=batch_size, sampler=sampler, collate_fn=_collate)
     val_loader   = torch.utils.data.DataLoader(
         val_ds,   batch_size=batch_size, shuffle=False, collate_fn=_collate)
 
     print(f"GCN training: {len(train_ds)} train  {len(val_ds)} val  "
           f"({n_no_det} skipped - no detection)")
 
-    # Class weights to handle imbalance
-    label_counts = {cls: 0 for cls in CLASSES}
+    # Class weights for the loss — computed over the full labelled pool
+    # (train+val) to keep the loss scale stable regardless of split.
+    full_label_counts = {cls: 0 for cls in CLASSES}
     for l in labels_l:
-        label_counts[l] += 1
-    total = sum(label_counts.values())
+        full_label_counts[l] += 1
+    total = sum(full_label_counts.values())
     weights = torch.tensor(
-        [total / (NUM_CLASSES * max(label_counts[c], 1)) for c in CLASSES],
+        [total / (NUM_CLASSES * max(full_label_counts[c], 1)) for c in CLASSES],
         dtype=torch.float32,
     ).to(device)
 
@@ -599,11 +621,11 @@ def run_gcn_pipeline(
     pose_model_path: str,
     device: str,
     # GCN hyperparams
-    hidden: int        = 64,
+    hidden: int        = 128,
     dropout: float     = 0.3,
-    lr: float          = 1e-3,
+    lr: float          = 3e-4,
     weight_decay: float= 1e-4,
-    epochs: int        = 60,
+    epochs: int        = 150,
     batch_size: int    = 32,
     train_split: float = 0.8,
     seed: int          = 42,

@@ -52,7 +52,7 @@ PROJECT_ROOT = os.path.dirname(_HERE)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.classification import CLASSES, DEFAULT_CONFIG, render_diagnostic
+from src.classification import CLASSES, DEFAULT_CONFIG, render_diagnostic, render_diagnostic_from_kps
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -77,17 +77,68 @@ def _domain_from_fname(fname):
 
 
 # ---------------------------------------------------------------------------
+# Keypoint cache helpers
+# ---------------------------------------------------------------------------
+
+def _discover_kp_cache(cls_dir):
+    """
+    Probe standard locations for _keypoints.npz produced by classify_directory.
+    Search order:
+      1. cls_dir/_keypoints.npz          (unlikely but cheap to check)
+      2. cls_dir/..  (one level up)      (extracted_humans/<ts>/_keypoints.npz)
+      3. cls_dir/../..                   (two levels up)
+    Returns the path of the first .npz found, or None.
+    """
+    candidates = [
+        os.path.join(cls_dir, "_keypoints.npz"),
+        os.path.join(cls_dir, "..", "_keypoints.npz"),
+        os.path.join(cls_dir, "..", "..", "_keypoints.npz"),
+    ]
+    for p in candidates:
+        p = os.path.normpath(p)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _load_kp_cache(npz_path):
+    """Load _keypoints.npz → {fname: {kps, bbox} | None}. Returns {} on error."""
+    try:
+        from src.gcn import load_keypoints
+        kp_cache = load_keypoints(npz_path)
+        print(f"  kp-cache     : {npz_path} ({len(kp_cache)} entries)")
+        return kp_cache
+    except Exception as e:
+        print(f"  [warn] could not load kp-cache {npz_path}: {e}")
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Diagnostic cache helpers
 # ---------------------------------------------------------------------------
 
-def _render_and_cache(pose_model, src_path, label, diag_cache_dir, cfg=DEFAULT_CONFIG):
-    """Render and cache a diagnostic image. Returns the cache path or None."""
+def _render_and_cache(pose_model, src_path, label, diag_cache_dir,
+                      cfg=DEFAULT_CONFIG, kp_cache=None):
+    """Render and cache a diagnostic image. Returns the cache path or None.
+
+    Uses pre-computed keypoints from kp_cache when available, falling back
+    to live YOLO inference only when necessary.
+    """
     img_bgr = cv2.imread(src_path)
     if img_bgr is None:
         return None
     try:
-        result   = pose_model(img_bgr, verbose=False)[0]
-        diag     = render_diagnostic(result, img_bgr, cfg, predicted_class=label)
+        fname = os.path.basename(src_path)
+        if kp_cache is not None and fname in kp_cache:
+            entry = kp_cache[fname]
+            kps   = entry["kps"]  if entry is not None else None
+            bbox  = entry["bbox"] if entry is not None else None
+            diag  = render_diagnostic_from_kps(
+                img_bgr, kps, bbox, cfg, predicted_class=label
+            )
+        else:
+            result = pose_model(img_bgr, verbose=False)[0]
+            diag   = render_diagnostic(result, img_bgr, cfg, predicted_class=label)
         out_path = os.path.join(diag_cache_dir, os.path.basename(src_path) + ".jpg")
         os.makedirs(diag_cache_dir, exist_ok=True)
         cv2.imwrite(out_path, diag, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -102,9 +153,10 @@ def _render_and_cache(pose_model, src_path, label, diag_cache_dir, cfg=DEFAULT_C
 # ---------------------------------------------------------------------------
 
 class Prefetcher:
-    def __init__(self, pose_model, diag_cache_dir, n_workers=2):
+    def __init__(self, pose_model, diag_cache_dir, n_workers=2, kp_cache=None):
         self.pose_model     = pose_model
         self.diag_cache_dir = diag_cache_dir
+        self.kp_cache       = kp_cache
         self._q             = queue.Queue()
         self._in_flight     = set()
         self._lock          = threading.Lock()
@@ -134,7 +186,10 @@ class Prefetcher:
             if item is None:
                 break
             fname, src_path, label = item
-            _render_and_cache(self.pose_model, src_path, label, self.diag_cache_dir)
+            _render_and_cache(
+                self.pose_model, src_path, label, self.diag_cache_dir,
+                kp_cache=self.kp_cache,
+            )
             with self._lock:
                 self._in_flight.discard(fname)
             self._q.task_done()
@@ -157,8 +212,9 @@ class AnnotationState:
         self.fname_to_src = {os.path.basename(p): (p, lbl) for p, lbl in patches}
         self.all_fnames   = [os.path.basename(p) for p, _ in patches]
 
-        # All 5 classes active by default
+        # All classes and both domains active by default
         self.active_classes = set(CLASSES)
+        self.active_domains = {"game", "movie"}
 
         self.queue = []
         self.idx   = 0
@@ -166,20 +222,27 @@ class AnnotationState:
 
         self.pose_model  = None
         self.prefetcher  = None
+        self.kp_cache    = {}    # {fname: {"kps", "bbox"} | None} — empty until loaded
 
     # ── Queue management ────────────────────────────────────────────────────
 
     def _rebuild_queue(self):
-        """Rebuild from unannotated patches in active classes. Resets idx."""
+        """Rebuild from unannotated patches in active classes and domains. Resets idx."""
         self.queue = [
             f for f in self.all_fnames
             if f not in self.annotations
             and self.fname_to_src[f][1] in self.active_classes
+            and _domain_from_fname(f) in self.active_domains
         ]
         self.idx = 0
 
     def set_filter(self, active_classes):
         self.active_classes = set(active_classes) & set(CLASSES)
+        self._rebuild_queue()
+        self._schedule_prefetch()
+
+    def set_domain_filter(self, active_domains):
+        self.active_domains = set(active_domains) & {"game", "movie"}
         self._rebuild_queue()
         self._schedule_prefetch()
 
@@ -190,6 +253,7 @@ class AnnotationState:
         return sum(
             1 for f in self.all_fnames
             if self.fname_to_src[f][1] in self.active_classes
+            and _domain_from_fname(f) in self.active_domains
         )
 
     @property
@@ -197,6 +261,7 @@ class AnnotationState:
         return sum(
             1 for f in self.annotations
             if self.fname_to_src.get(f, (None, None))[1] in self.active_classes
+            and _domain_from_fname(f) in self.active_domains
         )
 
     @property
@@ -239,6 +304,9 @@ class AnnotationState:
                              rule-based label (0 if class is inactive)
           target           : int | None
           active           : bool
+        Also includes a top-level "_domains" key:
+          { "game": {"active": bool, "remaining": int},
+            "movie": {"active": bool, "remaining": int} }
         """
         ann_game  = Counter()
         ann_movie = Counter()
@@ -255,12 +323,15 @@ class AnnotationState:
             self.fname_to_src[f][1]
             for f in self.queue[self.idx:]
         )
-        # Remaining for inactive classes (outside current queue)
+        # Remaining for patches excluded due to inactive class or domain
         remaining_inactive = Counter(
             self.fname_to_src[f][1]
             for f in self.all_fnames
             if f not in self.annotations
-            and self.fname_to_src[f][1] not in self.active_classes
+            and (
+                self.fname_to_src[f][1] not in self.active_classes
+                or _domain_from_fname(f) not in self.active_domains
+            )
         )
 
         target = self.class_target if self.class_target > 0 else None
@@ -276,6 +347,20 @@ class AnnotationState:
                 "target":          target if lbl != "bad_extraction" else None,
                 "active":          is_active,
             }
+
+        # Domain-level remaining counts (across all active classes)
+        result["_domains"] = {
+            dom: {
+                "active": dom in self.active_domains,
+                "remaining": sum(
+                    1 for f in self.all_fnames
+                    if f not in self.annotations
+                    and _domain_from_fname(f) == dom
+                    and self.fname_to_src[f][1] in self.active_classes
+                ),
+            }
+            for dom in ("game", "movie")
+        }
         return result
 
     # ── Persistence ─────────────────────────────────────────────────────────
@@ -313,7 +398,10 @@ class AnnotationState:
         if os.path.exists(cp):
             return cp
         src_path, _ = self.fname_to_src[fname]
-        return _render_and_cache(self.pose_model, src_path, label, self.diag_cache_dir)
+        return _render_and_cache(
+            self.pose_model, src_path, label, self.diag_cache_dir,
+            kp_cache=self.kp_cache,
+        )
 
     def invalidate_diag(self, fname):
         cp = self._cache_path(fname)
@@ -331,19 +419,37 @@ class AnnotationState:
             items.append((fname, src_path, label))
         self.prefetcher.schedule(items)
 
-    def load_model(self, model_path):
+    def load_model(self, model_path, kp_cache=None):
         from ultralytics import YOLO
+        self.kp_cache   = kp_cache or {}
         self.pose_model = YOLO(model_path)
-        self.prefetcher = Prefetcher(self.pose_model, self.diag_cache_dir,
-                                     n_workers=PREFETCH_WORKERS)
+        self.prefetcher = Prefetcher(
+            self.pose_model, self.diag_cache_dir,
+            n_workers=PREFETCH_WORKERS, kp_cache=self.kp_cache,
+        )
         self._schedule_prefetch()
 
     def check_and_skip_no_pose(self, fname):
         """
-        Run inference on a single patch. If no keypoints are detected,
+        Check whether a patch has no pose. If no keypoints are detected,
         auto-accept it as 'bad_extraction' and advance the queue.
+
+        Uses cached keypoints when available; falls back to live YOLO inference.
         Returns True if the patch was skipped, False otherwise.
         """
+        # --- fast path: use pre-computed keypoint cache ---
+        if fname in self.kp_cache:
+            no_det = self.kp_cache[fname] is None
+            if no_det:
+                self.annotations[fname] = {"label": "bad_extraction", "source": "auto_no_pose"}
+                self._save()
+                self.idx += 1
+                self._schedule_prefetch()
+                print(f"  [skip] {fname}: no pose (cached) -> bad_extraction")
+                return True
+            return False
+
+        # --- slow path: run YOLO inference ---
         src_path, _ = self.fname_to_src[fname]
         img_bgr = cv2.imread(src_path)
         if img_bgr is None:
@@ -521,6 +627,39 @@ HTML = r"""
   }
   .done-badge.visible { visibility: visible; }
 
+  /* ── Domain toggle row ── */
+  .domain-filter-row {
+    display: flex; align-items: center; gap: 6px;
+    padding-top: 6px; border-top: 1px solid var(--border);
+    margin-top: 2px;
+  }
+  .domain-filter-label {
+    font-size: 0.56rem; text-transform: uppercase;
+    letter-spacing: 0.10em; color: var(--muted); flex-shrink: 0;
+  }
+  .domain-toggle {
+    font-family: var(--mono); font-size: 0.58rem; font-weight: 600;
+    letter-spacing: 0.03em; padding: 3px 10px;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: var(--surface); color: var(--text);
+    cursor: pointer; transition: background 0.15s, border-color 0.15s, opacity 0.2s;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .domain-toggle:hover { background: #1e1e24; border-color: #3a3a42; }
+  .domain-toggle.inactive {
+    opacity: 0.35; background: #0a0a0c;
+    border-color: #1a1a1e; color: var(--muted);
+  }
+  .domain-toggle .dom-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .domain-toggle .dom-dot.game  { background: #47d4ff; }
+  .domain-toggle .dom-dot.movie { background: #b47dff; }
+  .domain-toggle .rem-pill {
+    font-size: 0.52rem; padding: 1px 4px; border-radius: 2px;
+    background: var(--border); color: var(--muted); white-space: nowrap; flex-shrink: 0;
+  }
+
   /* ── Prediction badge ── */
   .prediction-badge {
     display: flex; flex-direction: column; align-items: center; gap: 3px;
@@ -650,9 +789,10 @@ HTML = r"""
           Annotations per class
           <span class="tracker-target" id="tracker-target"></span>
         </span>
-        <span class="tracker-hint">click class name to skip / include</span>
+        <span class="tracker-hint">click to skip / include</span>
       </div>
-      <!-- rows injected by JS -->
+      <!-- class rows injected by JS -->
+      <!-- domain toggles injected by JS -->
     </div>
 
     <div class="prediction-badge">
@@ -715,6 +855,7 @@ let   busy         = false;
 let   pollTimer    = null;
 
 let activeClasses = new Set({{ active_classes | tojson }});
+let activeDomains = new Set({{ active_domains | tojson }});
 
 // ── Keyboard shortcuts ──────────────────────────────────────────────────────
 document.addEventListener("keydown", e => {
@@ -843,6 +984,28 @@ function toggleClass(cls) {
     });
 }
 
+// ── Domain filter toggle ────────────────────────────────────────────────────
+function toggleDomain(dom) {
+  if (activeDomains.has(dom)) {
+    if (activeDomains.size <= 1) {
+      showToast("At least one domain must stay active", "err");
+      return;
+    }
+    activeDomains.delete(dom);
+  } else {
+    activeDomains.add(dom);
+  }
+  document.querySelectorAll(".domain-toggle").forEach(b => b.disabled = true);
+  post("/api/set_domain_filter", { active_domains: [...activeDomains] })
+    .then(d => {
+      if (d?.redirect) window.location = d.redirect;
+      else updateTracker();
+    })
+    .finally(() => {
+      document.querySelectorAll(".domain-toggle").forEach(b => b.disabled = false);
+    });
+}
+
 // ── Tracker rendering ───────────────────────────────────────────────────────
 const CLS_LABELS = [
   "full_body_front", "full_body_back",
@@ -952,10 +1115,48 @@ function updateTracker() {
         container.appendChild(row);
       }
 
-      // Sync local activeClasses from server truth
+      // Sync local state from server truth
       activeClasses = new Set(
         CLS_LABELS.filter(l => (data[l]?.active !== false) && l !== "bad_extraction")
       );
+      activeDomains = new Set(
+        ["game", "movie"].filter(d => data._domains?.[d]?.active !== false)
+      );
+
+      // Domain filter row
+      const domRow = document.createElement("div");
+      domRow.className = "domain-filter-row";
+      const domLabel = document.createElement("span");
+      domLabel.className   = "domain-filter-label";
+      domLabel.textContent = "domain:";
+      domRow.appendChild(domLabel);
+
+      for (const dom of ["game", "movie"]) {
+        const info    = data._domains?.[dom] || {};
+        const isActive = info.active !== false;
+        const rem     = info.remaining || 0;
+
+        const btn = document.createElement("button");
+        btn.className = "domain-toggle" + (isActive ? "" : " inactive");
+        btn.title     = isActive ? `Click to skip ${dom}` : `Click to include ${dom}`;
+        btn.onclick   = () => toggleDomain(dom);
+
+        const dot = document.createElement("span");
+        dot.className = "dom-dot " + dom;
+
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = dom;
+
+        const pill = document.createElement("span");
+        pill.className   = "rem-pill";
+        pill.textContent = rem > 0 ? `${rem}` : "0";
+
+        btn.appendChild(dot);
+        btn.appendChild(nameSpan);
+        btn.appendChild(pill);
+        domRow.appendChild(btn);
+      }
+      container.appendChild(domRow);
     })
     .catch(() => {});
 }
@@ -991,6 +1192,7 @@ def _ctx():
         finished=s.finished,
         out_dir=s.out_dir,
         active_classes=list(s.active_classes),
+        active_domains=list(s.active_domains),
     )
 
 
@@ -1071,6 +1273,15 @@ def api_set_filter():
     return jsonify(redirect="/" if fname is not None else None)
 
 
+@app.route("/api/set_domain_filter", methods=["POST"])
+def api_set_domain_filter():
+    data           = request.get_json()
+    active_domains = data.get("active_domains", ["game", "movie"])
+    STATE.set_domain_filter(active_domains)
+    fname = STATE.current_fname()
+    return jsonify(redirect="/" if fname is not None else None)
+
+
 def _shutdown_server():
     import time, signal
     time.sleep(1.2)
@@ -1096,6 +1307,9 @@ def main():
     parser.add_argument("--cls-dir",      required=True)
     parser.add_argument("--out-dir",      default=None)
     parser.add_argument("--pose-model",   default=None)
+    parser.add_argument("--kp-cache",     default=None,
+                        help="Path to _keypoints.npz saved by classify_directory. "
+                             "Auto-discovered if omitted.")
     parser.add_argument("--port",         type=int, default=5000)
     parser.add_argument("--host",         default="127.0.0.1")
     parser.add_argument("--class-target", type=int, default=200,
@@ -1121,17 +1335,25 @@ def main():
     annotations    = load_annotations(json_path)
     diag_cache_dir = os.path.join(cls_dir, ".diag_cache")
 
+    # Resolve keypoint cache
+    npz_path = (
+        os.path.abspath(args.kp_cache) if args.kp_cache
+        else _discover_kp_cache(cls_dir)
+    )
+    kp_cache = _load_kp_cache(npz_path) if npz_path else {}
+
     global STATE
     STATE = AnnotationState(
         patches, annotations, json_path, out_dir, diag_cache_dir,
         class_target=args.class_target,
     )
-    STATE.load_model(pose_model)  # also starts prefetch
+    STATE.load_model(pose_model, kp_cache=kp_cache)  # also starts prefetch
 
     print(f"\nACV Annotator")
     print(f"  cls-dir      : {cls_dir}")
     print(f"  out-dir      : {out_dir}")
     print(f"  diag-cache   : {diag_cache_dir}")
+    print(f"  kp-cache     : {npz_path or 'none (will use live YOLO inference)'}")
     print(f"  patches      : {STATE.n_total}  (todo: {len(STATE.queue)}  done: {STATE.n_done})")
     print(f"  class-target : {args.class_target or 'none (counts only)'}")
     print(f"  prefetch     : next {PREFETCH_AHEAD} images, {PREFETCH_WORKERS} workers")
