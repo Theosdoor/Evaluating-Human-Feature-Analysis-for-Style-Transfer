@@ -486,13 +486,17 @@ def train_gcn(
                 per_class_total[cls] += 1
                 per_class_correct[cls] += int(pred == gt)
     print("  Val accuracy per class:")
+    per_class_val_acc = {}
     for cls in CLASSES:
         n = per_class_total[cls]
         if n:
-            acc = 100 * per_class_correct[cls] / n
-            print(f"    {cls:<25} {per_class_correct[cls]}/{n}  ({acc:.1f}%)")
+            acc = per_class_correct[cls] / n
+            per_class_val_acc[cls] = {"correct": per_class_correct[cls], "total": n, "acc": acc}
+            print(f"    {cls:<25} {per_class_correct[cls]}/{n}  ({100*acc:.1f}%)")
+        else:
+            per_class_val_acc[cls] = {"correct": 0, "total": 0, "acc": None}
 
-    return model
+    return model, per_class_val_acc
 
 
 # ---------------------------------------------------------------------------
@@ -552,14 +556,17 @@ def save_gcn_results(
     results: dict,
     src_dir: str,
     save_dir: str,
+    per_class_val_acc: dict = None,
 ) -> dict:
     """
     Copy patches into per-class subdirs under save_dir and write _summary.txt.
 
     Args:
-        results  : { fname: class_string }
-        src_dir  : directory containing the original patch files
-        save_dir : output directory (output/gcn_results/<run>/)
+        results           : { fname: class_string }
+        src_dir           : directory containing the original patch files
+        save_dir          : output directory (output/gcn_results/<run>/)
+        per_class_val_acc : optional dict from train_gcn —
+                            { cls: {"correct": int, "total": int, "acc": float|None} }
 
     Returns:
         summary dict { class_string: count }
@@ -587,6 +594,23 @@ def save_gcn_results(
     for cls, count in sorted(summary.items(), key=lambda x: -x[1]):
         pct = 100 * count / total if total else 0
         summary_lines.append(f"{cls:<25} {count:>6}  {pct:>5.1f}%")
+
+    if per_class_val_acc:
+        summary_lines += [
+            "",
+            "Val accuracy per class",
+            f"{'Class':<25} {'Correct':>7}  {'Total':>5}  {'Acc':>6}",
+            "-" * 48,
+        ]
+        for cls in CLASSES:
+            entry = per_class_val_acc.get(cls, {})
+            n = entry.get("total", 0)
+            if n:
+                correct = entry["correct"]
+                acc = 100 * entry["acc"]
+                summary_lines.append(f"{cls:<25} {correct:>7}  {n:>5}  {acc:>5.1f}%")
+            else:
+                summary_lines.append(f"{cls:<25} {'—':>7}  {'—':>5}  {'—':>6}")
 
     summary_text = "\n".join(summary_lines)
     print(summary_text)
@@ -712,7 +736,7 @@ def run_gcn_pipeline(
 
     # --- 4. Train ---
     labelled_items = list(labelled.items())
-    model = train_gcn(
+    model, per_class_val_acc = train_gcn(
         labelled_items = labelled_items,
         keypoints_dict = keypoints_dict,
         device         = device,
@@ -735,6 +759,6 @@ def run_gcn_pipeline(
     results = run_inference(model, all_fnames, keypoints_dict, device)
 
     # --- 6. Save results ---
-    summary = save_gcn_results(results, all_patches_dir, save_dir)
+    summary = save_gcn_results(results, all_patches_dir, save_dir, per_class_val_acc)
 
     return results, summary
