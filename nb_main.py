@@ -22,6 +22,10 @@ if IN_COLAB:
     os.chdir("ACV_cswk")
     subprocess.run(["uv", "pip", "install", "--system", "-r", "pyproject.toml"], check=True)
 
+# Install required external model/repositories
+install_script = os.path.join(PROJECT_ROOT, "scripts/install_externals.sh")
+subprocess.run([install_script], check=True)
+
 import time
 import numpy as np
 import cv2
@@ -64,10 +68,6 @@ SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
 
-# download external repos if necessary
-if not os.path.exists(os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")):
-    url = "https://github.com/Theosdoor/contrastive-unpaired-translation.git"
-    subprocess.run(["git", "clone", url], check=True)
 
 # %%
 # Which parts of pipeline to run?
