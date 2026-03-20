@@ -545,6 +545,15 @@ def render_diagnostic(
 # Batched directory classification
 # ---------------------------------------------------------------------------
 
+# ============================================================
+# PATCH for src/classification.py
+# Replace the two functions below in-place.
+# ============================================================
+
+# ---------------------------------------------------------------------------
+# Batched directory classification
+# ---------------------------------------------------------------------------
+
 def classify_directory(
     pose_model,
     input_dir: str,
@@ -553,6 +562,7 @@ def classify_directory(
     batch_size: int = 32,
     copy_files: bool = True,
     save_debug_viz: bool = False,
+    save_keypoints: bool = True,
 ) -> tuple[dict, dict]:
     """
     Classify all .jpg/.png files in input_dir using batched YOLO inference.
@@ -565,6 +575,9 @@ def classify_directory(
         batch_size:     Images per inference call.
         copy_files:     If True, copy patches into per-class subdirs.
         save_debug_viz: If True, save deep diagnostic images to output_dir/.diag_cache/.
+        save_keypoints: If True, save raw keypoint tensors to
+                        input_dir/_keypoints.npz for downstream use (GCN, annotator).
+                        Stored alongside the patches so they travel with the data.
 
     Returns:
         results: dict mapping filename -> class string.
@@ -585,8 +598,10 @@ def classify_directory(
     if save_debug_viz:
         os.makedirs(os.path.join(output_dir, '.diag_cache'), exist_ok=True)
 
-    results = {}
-    summary = {cls: 0 for cls in CLASSES}
+    results       = {}
+    summary       = {cls: 0 for cls in CLASSES}
+    keypoints_buf = {} if save_keypoints else None   # fname -> {kps, bbox} | None
+
     n_batches = (len(image_paths) + batch_size - 1) // batch_size
 
     for i in tqdm(range(0, len(image_paths), batch_size), total=n_batches, desc="Classifying", unit="batch"):
@@ -598,15 +613,19 @@ def classify_directory(
 
             if result.keypoints is None or result.keypoints.data.shape[0] == 0:
                 cls = 'others'
+                if keypoints_buf is not None:
+                    keypoints_buf[fname] = None
             else:
                 boxes    = result.boxes.xyxy.cpu().numpy()
                 areas    = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
                 best_idx = int(np.argmax(areas))
-                cls = classify_keypoints(
-                    result.keypoints.data[best_idx].cpu().numpy(),
-                    bbox=boxes[best_idx],
-                    cfg=cfg,
-                )
+                kps_np   = result.keypoints.data[best_idx].cpu().numpy()
+                bbox_np  = boxes[best_idx]
+
+                cls = classify_keypoints(kps_np, bbox=bbox_np, cfg=cfg)
+
+                if keypoints_buf is not None:
+                    keypoints_buf[fname] = {"kps": kps_np, "bbox": bbox_np}
 
             results[fname]  = cls
             summary[cls]   += 1
@@ -620,6 +639,13 @@ def classify_directory(
                     diag = render_diagnostic(result, img_bgr, cfg, predicted_class=cls)
                     cv2.imwrite(os.path.join(output_dir, '.diag_cache', fname), diag)
 
+    # Persist keypoints next to the source patches
+    if keypoints_buf is not None:
+        from src.gcn import save_keypoints as _save_kp
+        npz_path = os.path.join(input_dir, "_keypoints.npz")
+        _save_kp(keypoints_buf, npz_path)
+        print(f"Keypoints saved → {npz_path}")
+
     print(f"\nDone. {dict((k, v) for k, v in summary.items() if v > 0)}")
     return results, summary
 
@@ -631,6 +657,7 @@ def classify_directory(
 def reload_classification_results(cls_save_path: str) -> tuple[dict, dict]:
     """
     Reconstruct results and summary from an existing classification directory.
+    Works for both init_classifications and gcn_results directories.
     """
     results = {}
     summary = {cls: 0 for cls in CLASSES}

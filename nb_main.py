@@ -73,39 +73,43 @@ print(f"Using device: {DEVICE}")
 # Which parts of pipeline to run?
 
 RUN_FULL_PIPELINE = False # True = run all stages ignoring reload flags. False = skip stages with reload flags set (see below).
+
 # -- 1.1 --
-# Set to a run timestamp to reload existing outputs and skip stages already done.
-# Leave as None to run the full pipeline from scratch.
-# e.g. RELOAD_RUN = "20260224-224712"
-RELOAD_EXTRACT = None # skip 1.1
+RELOAD_EXTRACT = None
 RELOAD_EXTRACT = "20260314-195748"
 
-# -- 1.2 --
-# Set to None to run classification.
-# Set to a folder name under output/classifications to reload existing results.
-RELOAD_CLS = None
-# RELOAD_CLS = "20260314-195748-3"
+# -- 1.2 rule-based --
+# Points to a run name under output/init_classifications/.
+# Set to None to run rule-based classification from scratch.
+# RELOAD_INIT_CLS = None
+RELOAD_INIT_CLS = "20260314-195748-6"
 
-# -- 1.2b --
-# Set to a path (relative to project root, or absolute) to an annotations.json produced
-# by scripts/annotate.py. Those manual labels will override the rule-based classification.
-# e.g. RELOAD_ANNOTATIONS = "output/manual_annotated/20260314-195748-5/annotations.json"
+# -- 1.2b manual annotations --
+# Path to annotations.json from scripts/annotate.py.
+# Used as training labels for the GCN.
 RELOAD_ANNOTATIONS = None
+RELOAD_ANNOTATIONS = "20260314-195748-6"
+
+# -- 1.2c GCN --
+# "rule"   — train GCN on rule-based labels (RELOAD_INIT_CLS dir)
+# "manual" — train GCN on manual annotations (RELOAD_ANNOTATIONS)
+GCN_LABEL_SOURCE = "manual"
+
+# Set to a run name under output/gcn_results/ to skip GCN training+inference.
+RELOAD_GCN = None
+# RELOAD_GCN = "20260314-195748"
 
 # -- 1.3 --
-RELOAD_TRAIN_SELECT = None # skip 1.3
+RELOAD_TRAIN_SELECT = None
 
 # -- 2.1 --
-# toggles for quick checkpoint-only runs
 RUN_TRAIN_CUT = False
 RUN_TRANSLATE_VIDEO = False
 
-# -- 2.2 --
-
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
-reload_extract = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
-reload_cls = None if RUN_FULL_PIPELINE else RELOAD_CLS
-reload_annotations = None if RUN_FULL_PIPELINE else RELOAD_ANNOTATIONS
+reload_extract   = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
+reload_init_cls  = None if RUN_FULL_PIPELINE else RELOAD_INIT_CLS
+reload_gcn       = None if RUN_FULL_PIPELINE else RELOAD_GCN
 
 # %% [markdown]
 # ## 1.1. Human Patch Extraction
@@ -121,19 +125,16 @@ scene_change_threshold=8.0
 blur_threshold_film=40.0
 blur_threshold_game=100.0
 
-detections = []         # all raw detections (for diagnostics)
+detections = []
 selected_detections = []
 
 if reload_extract:
-    # Reload existing extracted patches
     selected_detections = reload_extracted_patches(extract_save_path, [d["path"] for d in TRAIN_DATA])
 else:
     model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
     model.to(DEVICE)
 
-    # Equal per-domain budgets: CUT needs balanced domains, so extract ~2000 per domain.
-    # Movie budget is split proportionally by duration across its 3 films.
-    domain_budget = n2save // 2  # 2000 per domain
+    domain_budget = n2save // 2
     targets = []
     movie_durations = [d["duration"] for d in TRAIN_DATA if d["domain"] == 'movie']
     movie_total = sum(movie_durations)
@@ -142,10 +143,10 @@ else:
             targets.append(domain_budget)
         else:
             targets.append(int(domain_budget * data["duration"] / movie_total))
-    targets[-1] += n2save - sum(targets)  # absorb rounding remainder
+    targets[-1] += n2save - sum(targets)
 
     for data, target in tqdm(zip(TRAIN_DATA, targets), desc="Processing training videos", unit="video", total=len(TRAIN_DATA)):
-        video_dets = extract_humans_from_video(model, data["path"], 
+        video_dets = extract_humans_from_video(model, data["path"],
                                                 yolo_batch_size=detection_b_size,
                                                 yolo_interval=yolo_interval,
                                                 scene_change_threshold=scene_change_threshold,
@@ -162,130 +163,121 @@ else:
 
         detections += video_dets
         selected_detections += selected
-    # 50 to submit (do once we've got good results)
+
     print(f"Using freshly-extracted patches from {extract_save_path}")
     save_extraction_summary(extract_save_path, detections, selected_detections)
 
 # %% [markdown]
-# ## 1.2. Classification
+# ## 1.2. Rule-Based Classification
 
 # %%
-cls_input_path = extract_save_path
-cls_base_dir = os.path.join(SAVE_DIR, "classifications")
-if reload_cls:
-    cls_save_path = os.path.join(cls_base_dir, reload_cls)
+init_cls_base_dir = os.path.join(SAVE_DIR, "init_classifications")
+if reload_init_cls:
+    init_cls_save_path = os.path.join(init_cls_base_dir, reload_init_cls)
 else:
-    cls_save_path = get_next_reclassify_dir(cls_base_dir, os.path.basename(extract_save_path))
+    init_cls_save_path = get_next_reclassify_dir(init_cls_base_dir, os.path.basename(extract_save_path))
 
 classify_b_size = 32
 
-if reload_cls:
-    # Reload existing classification results
-    results, summary = reload_classification_results(cls_save_path)
+if reload_init_cls:
+    init_results, init_summary = reload_classification_results(init_cls_save_path)
 else:
     pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
     pose_model.to(DEVICE)
 
-    results, summary = classify_directory(
+    init_results, init_summary = classify_directory(
         pose_model,
-        input_dir=cls_input_path,
-        output_dir=cls_save_path,
+        input_dir=extract_save_path,      # patches live here
+        output_dir=init_cls_save_path,
         batch_size=classify_b_size,
-        copy_files=True,       # copy files to classifications dir for easy reference
-        save_debug_viz=False,   # set True to save YOLO-annotated images to debug_viz/
+        copy_files=True,
+        save_debug_viz=False,
+        save_keypoints=True,              # writes _keypoints.npz to extract_save_path
     )
 
-    print(summary)
-
-    # Save summary to file
-    os.makedirs(cls_save_path, exist_ok=True)
-    summary_path = os.path.join(cls_save_path, "_summary.txt")
-    total_classified = sum(summary.values())
+    total_classified = sum(init_summary.values())
+    os.makedirs(init_cls_save_path, exist_ok=True)
+    summary_path = os.path.join(init_cls_save_path, "_summary.txt")
     with open(summary_path, "w") as f:
-        f.write(f"Classification summary\n")
+        f.write(f"Rule-based classification summary\n")
         f.write(f"Save time: {time.strftime('%Y%m%d-%H%M%S')}\n")
-        f.write(f"Input: {cls_input_path}\n")
+        f.write(f"Input: {extract_save_path}\n")
         f.write(f"Total patches classified: {total_classified}\n\n")
         f.write(f"{'Class':<25} {'Count':>6}  {'%':>6}\n")
         f.write("-" * 42 + "\n")
-        for cls, count in sorted(summary.items(), key=lambda x: -x[1]):
+        for cls, count in sorted(init_summary.items(), key=lambda x: -x[1]):
             pct = 100 * count / total_classified if total_classified else 0
             f.write(f"{cls:<25} {count:>6}  {pct:>5.1f}%\n")
-    print(f"Summary saved to {summary_path}")
-
-total_classified = sum(summary.values())
+    print(f"Rule-based summary saved to {summary_path}")
 
 # %% [markdown]
-# ## 1.2b. Apply Manual Annotations (optional)
+# ## 1.2b. Manual Annotation (optional — run scripts/annotate.py separately)
+#
+# Run annotate.py against init_cls_save_path to produce an annotations.json:
+#
+#     python3 scripts/annotate.py --cls-dir output/init_classifications/<run>
+#
+# Then set RELOAD_ANNOTATIONS above to the resulting annotations.json path.
+
+# %% [markdown]
+# ## 1.2c. GCN Classification
 
 # %%
-# If a manual annotations.json exists, merge those labels into `results` and `summary`.
-# Patches annotated manually override the rule-based classification.
-if reload_annotations:
-    ann_path = os.path.join(PROJECT_ROOT, reload_annotations) if not os.path.isabs(reload_annotations) else reload_annotations
-    if not os.path.exists(ann_path):
-        print(f"[WARN] annotations file not found: {ann_path}")
-    else:
-        import json
-        with open(ann_path) as _f:
-            _raw_annotations = json.load(_f)
+from src.gcn import run_gcn_pipeline, reload_gcn_results
 
-        # _raw_annotations: {fname: {"label": ..., "source": ...}}
-        # Rebuild summary from scratch so counts stay accurate.
-        _overridden = 0
-        ALL_LABELS_SET = set(CLASSES) | {"bad_extraction"}
-        for _fname, _entry in _raw_annotations.items():
-            _label = _entry.get("label")
-            if _label not in ALL_LABELS_SET:
-                print(f"  [WARN] unknown label '{_label}' for {_fname}, skipping")
-                continue
-            _old = results.get(_fname)
-            if _old and _old != _label:
-                summary[_old] = summary.get(_old, 0) - 1
-                _overridden += 1
-            if _label in summary:
-                summary[_label] = summary.get(_label, 0) + (0 if _old == _label else 1)
-            results[_fname] = _label
+gcn_run_name  = reload_gcn if reload_gcn else SAVE_NAME
+gcn_save_path = os.path.join(SAVE_DIR, "gcn_results", gcn_run_name)
 
-        total_classified = sum(v for v in summary.values() if v > 0)
-        print(f"Loaded {len(_raw_annotations)} manual annotations from {ann_path}")
-        print(f"  {_overridden} patches had their rule-based label overridden")
-        print("  " + "  ".join(f"{k}: {v}" for k, v in summary.items() if v > 0))
+if reload_gcn:
+    results, summary = reload_gcn_results(gcn_save_path)
 else:
-    print("No manual annotations loaded (RELOAD_ANNOTATIONS=None).")
+    # Decide which labels to use for GCN training
+    if GCN_LABEL_SOURCE == "manual":
+        if not RELOAD_ANNOTATIONS:
+            raise ValueError("GCN_LABEL_SOURCE='manual' but RELOAD_ANNOTATIONS is not set.")
+        if os.sep in RELOAD_ANNOTATIONS or "/" in RELOAD_ANNOTATIONS:
+            # treat as explicit path
+            ann_path = (
+                os.path.join(PROJECT_ROOT, RELOAD_ANNOTATIONS)
+                if not os.path.isabs(RELOAD_ANNOTATIONS)
+                else RELOAD_ANNOTATIONS
+            )
+        else:
+            # treat as run name — look up under output/manual_annotated/
+            ann_path = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS, "annotations.json")
+        labelled_dir = os.path.dirname(ann_path)
+
+    results, summary = run_gcn_pipeline(
+        labelled_dir    = labelled_dir,
+        cls_source      = GCN_LABEL_SOURCE,
+        all_patches_dir = extract_save_path,
+        save_dir        = gcn_save_path,
+        pose_model_path = os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
+        device          = DEVICE,
+    )
+
+total_classified = sum(summary.values())
 
 # %% [markdown]
 # ## 1.3 Training Data Selection
 
 # %%
-save_dir = os.path.join(SAVE_DIR, "training_data_selection", os.path.basename(cls_save_path))
-
 from src.data import get_data_split, flat_paths, flat_paths_by_domain
 
 split = get_data_split(
-    cls_save_path,
+    gcn_save_path,                  # use GCN results as the classification source
     train_split=1.0,
-    exclude_classes=['others'],  # drop ambiguous patches
+    exclude_classes=['others'],
 )
 
 train_game, train_movie = flat_paths_by_domain(split['train'])
-val_game, val_movie = flat_paths_by_domain(split['val'])
-
-# TODO - same splits at save_dir
-# os.makedirs(save_dir, exist_ok=True)
-
+val_game, val_movie     = flat_paths_by_domain(split['val'])
 
 
 # %% [markdown]
 # ## 2.1 Image Model Deployment (baseline model)
 
 # %%
-# 1. using contrastive-unpaired-translation, apply it to output/extracted_humans/20260314-195748 to convert images between game and movie domains.
-# 2. analyse performance in both directions using appropriate metrics (e.g. FID, KID, LPIPS) and visualizations (e.g. UMAPs).
-# 3. Transfer the style humans in downloaded_data/Test/Test.mp4 and save the video to output/baseline_model.
-
-# %%
-# Dataset preparation + CUT training
 from src.baseline_model import build_frame_dataset, train_cut, translate_test_video
 
 cut_dir = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
@@ -293,11 +285,10 @@ data_2_1 = os.path.join(SAVE_DIR, "cut_data")
 exp_game2movie = "cut_game2movie"
 exp_movie2game = "cut_movie2game"
 
-# Hyperparams — reduce epochs or batch size if time / VRAM constrained
 n_frames_per_domain = 500
 n_epochs            = 20
 n_epochs_decay      = 5
-batch_size          = 4      # use 2 if VRAM < 8 GB
+batch_size          = 4
 
 trainA, trainB, testA, testB = build_frame_dataset(
     selected_detections, [d["path"] for d in TRAIN_DATA], data_2_1, n_frames_per_domain
@@ -317,7 +308,6 @@ else:
     print("Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
 
 # %%
-# Metrics (FID, KID, LPIPS) & viz
 import glob, json
 from src.baseline_model import run_inference, make_inference_dataroot, compute_metrics
 
@@ -351,7 +341,6 @@ if g2m_ready and m2g_ready:
     with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)
 
-    # Visualisation — comparison grids + UMAPs
     from src.baseline_model import save_comparison_grid, save_umap
 
     save_comparison_grid(glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes,

@@ -1,7 +1,8 @@
 # ACV Cswk
 
-deps to install into external/:
-- 
+deps:
+- pretrained cut model
+- pretrained dino model - https://github.com/facebookresearch/dinov2/blob/main/README.md
 
 ## Dataset
 
