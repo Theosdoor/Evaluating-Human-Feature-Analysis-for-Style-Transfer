@@ -921,27 +921,57 @@ function post(url, body) {
   }).then(r => r.json()).finally(() => { busy = false; });
 }
 
-// ── Actions ─────────────────────────────────────────────────────────────────
+// ── In-place state update ────────────────────────────────────────────────────
+let FNAME_cur = FNAME;
+
+function applyNext(d) {
+  if (!d) return;
+  if (d.finished) { window.location = "/"; return; }
+
+  FNAME_cur    = d.fname;
+  currentLabel = d.current_label;
+
+  // Header progress
+  const hdrProg = document.getElementById("hdr-progress");
+  if (hdrProg) hdrProg.textContent = d.n_done + " / " + d.n_total;
+  const hdrBar = document.getElementById("hdr-bar");
+  if (hdrBar)  hdrBar.style.width  = d.pct + "%";
+  const fnameEl = document.querySelector("header .fname");
+  if (fnameEl) fnameEl.textContent = d.fname || "";
+
+  // Labels
+  const lbl = document.getElementById("current-label");
+  if (lbl) lbl.textContent = d.current_label;
+  const rule = document.querySelector(".badge-rule");
+  if (rule) rule.textContent = d.rule_label;
+
+  // Swap raw image
+  const rawImg = document.querySelector(".img-raw");
+  if (rawImg) rawImg.src = "/raw/" + encodeURIComponent(d.fname) + "?t=" + Date.now();
+
+  startDiagPoll(d.fname, d.current_label);
+  updateTracker();
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────────
 function accept() {
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-  post("/accept", { fname: FNAME, label: currentLabel })
-    .then(d => { if (d?.redirect) window.location = d.redirect; });
+  post("/accept", { fname: FNAME_cur, label: currentLabel })
+    .then(d => applyNext(d));
 }
 
 function reclassify(label) {
-  currentLabel = label;
-  const el = document.getElementById("current-label");
-  if (el) el.textContent = label;
   document.getElementById("reclassify-panel").classList.remove("open");
-  post("/invalidate", { fname: FNAME })
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  fetch("/invalidate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fname: FNAME_cur }),
+  })
     .then(() => {
-      startDiagPoll(FNAME, label);
-      return post("/accept", { fname: FNAME, label: label, source: "manual" });
-    })
-    .then(d => {
       showToast("-> " + label, "ok");
-      setTimeout(() => { if (d?.redirect) window.location = d.redirect; }, 500);
-    });
+      return post("/accept", { fname: FNAME_cur, label: label, source: "manual" });
+    })
+    .then(d => applyNext(d));
 }
 
 function toggleReclassify() {
@@ -950,7 +980,7 @@ function toggleReclassify() {
 
 function goBack() {
   if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-  post("/back", {}).then(d => { if (d?.redirect) window.location = d.redirect; });
+  post("/back", {}).then(d => applyNext(d));
 }
 
 function finish() {
@@ -1176,38 +1206,15 @@ function showToast(msg, type) {
 """
 
 
-def _ctx():
-    s           = STATE
-    fname       = s.current_fname()
-    rule_label  = s.fname_to_src[fname][1] if fname else ""
-    current_lbl = s.annotations.get(fname, {}).get("label", rule_label) if fname else ""
-    pct         = round(s.n_done / s.n_total * 100, 1) if s.n_total else 0
-    return dict(
-        fname=fname,
-        rule_label=rule_label,
-        current_label=current_lbl,
-        n_done=s.n_done,
-        n_total=s.n_total,
-        pct=pct,
-        finished=s.finished,
-        out_dir=s.out_dir,
-        active_classes=list(s.active_classes),
-        active_domains=list(s.active_domains),
-    )
 
 
 @app.route("/")
 def index():
-    # Skip any consecutive no-pose patches at the front of the queue.
-    if STATE.pose_model is not None:
-        while not STATE.finished:
-            fname = STATE.current_fname()
-            if fname and fname not in STATE.annotations:
-                if STATE.check_and_skip_no_pose(fname):
-                    continue   # auto-accepted — check the next one
-            break
-    STATE._schedule_prefetch()
-    return render_template_string(HTML, **_ctx())
+    ctx = _next_state()
+    return render_template_string(HTML, **ctx,
+                                  out_dir=STATE.out_dir,
+                                  active_classes=list(STATE.active_classes),
+                                  active_domains=list(STATE.active_domains))
 
 
 @app.route("/raw/<fname>")
@@ -1232,6 +1239,31 @@ def diag(fname):
     return send_file(cache_path, mimetype="image/jpeg")
 
 
+def _next_state():
+    """Skip no-pose patches, schedule prefetch, return JSON-serialisable state."""
+    if STATE.pose_model is not None:
+        while not STATE.finished:
+            fname = STATE.current_fname()
+            if fname and fname not in STATE.annotations:
+                if STATE.check_and_skip_no_pose(fname):
+                    continue
+            break
+    STATE._schedule_prefetch()
+    fname      = STATE.current_fname()
+    rule_label = STATE.fname_to_src[fname][1] if fname else ""
+    cur_label  = STATE.annotations.get(fname, {}).get("label", rule_label) if fname else ""
+    pct        = round(STATE.n_done / STATE.n_total * 100, 1) if STATE.n_total else 0
+    return dict(
+        fname=fname,
+        rule_label=rule_label,
+        current_label=cur_label,
+        n_done=STATE.n_done,
+        n_total=STATE.n_total,
+        pct=pct,
+        finished=STATE.finished,
+    )
+
+
 @app.route("/accept", methods=["POST"])
 def accept():
     data   = request.get_json()
@@ -1242,7 +1274,7 @@ def accept():
         "auto" if label == STATE.fname_to_src[fname][1] else "manual",
     )
     STATE.accept(fname, label, source)
-    return jsonify(redirect="/")
+    return jsonify(**_next_state())
 
 
 @app.route("/invalidate", methods=["POST"])
@@ -1256,7 +1288,7 @@ def invalidate():
 @app.route("/back", methods=["POST"])
 def back():
     STATE.go_back()
-    return jsonify(redirect="/")
+    return jsonify(**_next_state())
 
 
 @app.route("/api/class_counts")
