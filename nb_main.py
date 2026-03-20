@@ -8,6 +8,7 @@
 import os
 import sys
 import subprocess
+import shutil
 
 # Add project root to path for imports
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +27,8 @@ if IN_COLAB:
 install_script = os.path.join(PROJECT_ROOT, "scripts/install_externals.sh")
 subprocess.run([install_script], check=True)
 
+import glob
+import json
 import time
 import numpy as np
 import cv2
@@ -35,6 +38,18 @@ from ultralytics import YOLO # https://github.com/ultralytics/ultralytics
 
 from src.feat_extract import *
 from src.classification import *
+from src.baseline_model import (
+    ensure_pretrained_models,
+    build_frame_dataset,
+    run_inference,
+    make_inference_dataroot,
+    compute_metrics,
+    save_comparison_grid,
+    save_umap,
+    PRETRAINED_MODELS,
+    translate_test_video,
+)
+
 from src.utils import *
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
@@ -66,9 +81,14 @@ SAVE_DIR = os.path.join(PROJECT_ROOT, "output")
 SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')
 FIGURES_DIR = os.path.join(PROJECT_ROOT, "figures")
 
-
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
+
+# Pick whichever pretrained model you want to evaluate in 2.1 and 2.2
+EXP_NAME = "horse2zebra_cut_pretrained"  # or any from PRETRAINED_MODELS (TODO - list options here)
+
+if EXP_NAME not in PRETRAINED_MODELS:
+    raise ValueError(f"Unknown pretrained model '{EXP_NAME}'. Choose from: {PRETRAINED_MODELS}")
 
 
 # %%
@@ -110,7 +130,7 @@ RELOAD_GCN = "20260320-162455"
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None
 
-# -- 2.1 --
+# -- 2.1 & 2.2 --
 RUN_TRANSLATE_VIDEO = True
 
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
@@ -304,35 +324,27 @@ if RUN_GCN_ABLATION:
 # ## 1.3 Training Data Selection
 
 # %%
-# 1.
+# For now, just use all data from the gcn results directory
+from src.data import get_data_split, flat_paths, flat_paths_by_domain
+
+split = get_data_split(
+    gcn_save_path,
+    train_split=1.0,
+    exclude_classes=['others']
+)
+
+train_game, train_movie = flat_paths_by_domain(split['train'])
+val_game, val_movie     = flat_paths_by_domain(split['val'])
 
 
 # %% [markdown]
 # ## 2.1 Image Model Deployment (baseline model)
 
 # %%
-from src.baseline_model import (
-    ensure_pretrained_models,
-    build_frame_dataset,
-    run_inference,
-    make_inference_dataroot,
-    compute_metrics,
-    save_comparison_grid,
-    save_umap,
-    PRETRAINED_MODELS,
-    translate_test_video,
-)
-import glob
-import json
+
 
 cut_dir = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
 data_2_1 = os.path.join(SAVE_DIR, "cut_data")
-
-# Pick whichever pretrained model you want to evaluate
-EXP_NAME = "horse2zebra_cut_pretrained"  # or any from PRETRAINED_MODELS (TODO - list options here)
-
-if EXP_NAME not in PRETRAINED_MODELS:
-    raise ValueError(f"Unknown pretrained model '{EXP_NAME}'. Choose from: {PRETRAINED_MODELS}")
 
 ensure_pretrained_models(cut_dir)
 
@@ -432,5 +444,128 @@ save_umap(
 # ## 2.2 Enhanced model
 
 # %%
-# 1. use data from 1.3 & same pretrained model from 2.1
-# 2. use temporal enhancement
+# 1. use selected patch data from 1.3
+# 2. keep the same pretrained CUT model as 2.1 (no retraining)
+# 3. use temporal enhancement (deferred for now)
+
+data_2_2 = os.path.join(SAVE_DIR, "2_2_data")
+trainA = os.path.join(data_2_2, "trainA")
+trainB = os.path.join(data_2_2, "trainB")
+testA = os.path.join(data_2_2, "testA")
+testB = os.path.join(data_2_2, "testB")
+
+for d in [trainA, trainB, testA, testB]:
+    os.makedirs(d, exist_ok=True)
+
+def _stage_paths(paths, out_dir):
+    staged = 0
+    for src in paths:
+        dst = os.path.join(out_dir, os.path.basename(src))
+        if not os.path.exists(dst):
+            try:
+                os.symlink(os.path.abspath(src), dst)
+            except FileExistsError:
+                pass
+            except OSError:
+                # Fallback when symlinks are unavailable.
+                shutil.copy2(src, dst)
+            staged += 1
+    return staged
+
+print("Staging 1.3-selected data for 2.2...")
+print(f"  trainA (game):  +{_stage_paths(train_game, trainA)}")
+print(f"  trainB (movie): +{_stage_paths(train_movie, trainB)}")
+print(f"  testA (game):   +{_stage_paths(val_game if val_game else train_game[:200], testA)}")
+print(f"  testB (movie):  +{_stage_paths(val_movie if val_movie else train_movie[:200], testB)}")
+
+results_dir = os.path.join(SAVE_DIR, "2_2_results")
+
+g2m_fakes = run_inference(
+    cut_dir, EXP_NAME,
+    make_inference_dataroot(testA, testB),
+    os.path.join(results_dir, "g2m"),
+    "AtoB", DEVICE,
+)
+m2g_fakes = run_inference(
+    cut_dir, EXP_NAME,
+    make_inference_dataroot(testB, testA),
+    os.path.join(results_dir, "m2g"),
+    "BtoA", DEVICE,
+)
+
+if RUN_TRANSLATE_VIDEO:
+    enhanced_video = translate_test_video(
+        cut_dir,
+        EXP_NAME,
+        TEST_PATH,
+        SAVE_DIR,
+        DEVICE,
+        output_name="enhanced_model.mp4",
+    )
+    print(f"Enhanced video → {enhanced_video}")
+else:
+    enhanced_video = None
+    print("Skipping video translation (RUN_TRANSLATE_VIDEO=False).")
+
+# %%
+metrics = {
+    "game→movie": compute_metrics(
+        testB,
+        os.path.join(results_dir, "g2m", "fake"),
+        glob.glob(os.path.join(testA, "*.jpg")),
+        g2m_fakes,
+        DEVICE,
+    ),
+    "movie→game": compute_metrics(
+        testA,
+        os.path.join(results_dir, "m2g", "fake"),
+        glob.glob(os.path.join(testB, "*.jpg")),
+        m2g_fakes,
+        DEVICE,
+    ),
+}
+for direction, vals in metrics.items():
+    print(f"{direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
+
+viz_dir = os.path.join(SAVE_DIR, "2_2_viz")
+os.makedirs(viz_dir, exist_ok=True)
+with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
+    json.dump(metrics, f, indent=2)
+
+save_comparison_grid(
+    glob.glob(os.path.join(testA, "*.jpg")),
+    g2m_fakes,
+    "game → movie (CUT)",
+    os.path.join(viz_dir, "comparison_game2movie.png"),
+)
+save_comparison_grid(
+    glob.glob(os.path.join(testB, "*.jpg")),
+    m2g_fakes,
+    "movie → game (CUT)",
+    os.path.join(viz_dir, "comparison_movie2game.png"),
+)
+
+save_umap(
+    [
+        glob.glob(os.path.join(testA, "*.jpg")),
+        glob.glob(os.path.join(testB, "*.jpg")),
+        g2m_fakes,
+    ],
+    ["game (real)", "movie (real)", "game→movie (fake)"],
+    ["steelblue", "tomato", "mediumpurple"],
+    "VGG feature UMAP: game→movie",
+    os.path.join(viz_dir, "umap_game2movie.png"),
+    device=DEVICE,
+)
+save_umap(
+    [
+        glob.glob(os.path.join(testA, "*.jpg")),
+        glob.glob(os.path.join(testB, "*.jpg")),
+        m2g_fakes,
+    ],
+    ["game (real)", "movie (real)", "movie→game (fake)"],
+    ["steelblue", "tomato", "seagreen"],
+    "VGG feature UMAP: movie→game",
+    os.path.join(viz_dir, "umap_movie2game.png"),
+    device=DEVICE,
+)
