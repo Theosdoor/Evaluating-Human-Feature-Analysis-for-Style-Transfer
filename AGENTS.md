@@ -46,6 +46,5 @@ downloaded_data/
 - Do **not** include original `.mp4` files; compress all media
 - Include auto-download lines for external models (`wget`, `git clone`)
 - Scripts other than `nb_main.py` go in `scripts/`
-- Don't use type hints, or `from __future__ import annotations`
 
 See [paper/AGENTS.md](paper/AGENTS.md) for paper build instructions.
