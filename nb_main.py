@@ -85,7 +85,12 @@ DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 print(f"Using device: {DEVICE}")
 
 # Pick whichever pretrained model you want to evaluate in 2.1 and 2.2
-EXP_NAME = "horse2zebra_cut_pretrained"  # or any from PRETRAINED_MODELS (TODO - list options here)
+EXP_NAME = "horse2zebra_cut_pretrained"
+# Available pretrained models:
+#     cityscapes_cut_pretrained, cityscapes_fastcut_pretrained,
+#     horse2zebra_cut_pretrained, horse2zebra_fastcut_pretrained,
+#     cat2dog_cut_pretrained, cat2dog_fastcut_pretrained
+
 
 if EXP_NAME not in PRETRAINED_MODELS:
     raise ValueError(f"Unknown pretrained model '{EXP_NAME}'. Choose from: {PRETRAINED_MODELS}")
