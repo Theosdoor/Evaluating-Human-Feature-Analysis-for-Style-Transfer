@@ -340,7 +340,7 @@ def _extract_test_patches(
 
 
 def _save_crop_metadata(metadata: list[dict], patch_dir: str) -> None:
-    serialisable = [{**m, "bbox": list(m["bbox"])} for m in metadata]
+    serialisable = [{**m, "frame_idx": int(m["frame_idx"]), "bbox": [int(x) for x in m["bbox"]]} for m in metadata]
     with open(os.path.join(patch_dir, "_metadata.json"), "w") as f:
         json.dump(serialisable, f)
 

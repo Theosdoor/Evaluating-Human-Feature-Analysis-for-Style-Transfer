@@ -222,7 +222,7 @@ def run_cut_inference(
     subprocess.run(cmd, check=True, cwd=cut_dir)
 
     raw_dir = os.path.join(cut_results_root, exp_name, f"{phase}_latest", "images")
-    fake_tag = "fake_B"
+    fake_tag = "fake_B" if direction == "AtoB" else "fake_A"
     subdir = os.path.join(raw_dir, fake_tag)
 
     if os.path.isdir(subdir):

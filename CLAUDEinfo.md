@@ -1,4 +1,6 @@
-# CLAUDE.md — ACV Coursework
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 AI assistant guide for the ACV (Advanced Computer Vision) coursework repository.
 
@@ -119,9 +121,21 @@ Fine-tunes CUT on selected patches. Composites translated patches back onto sour
 
 ### Output directory naming
 
+`SAVE_NAME = time.strftime('%Y%m%d-%H%M%S')` is set once at notebook startup and used as the base name for the current run.
+
+| Stage | Output path |
+| ----- | ----------- |
+| 1.1 extraction | `output/extracted_humans/<SAVE_NAME>/` |
+| 1.2 rule-based classification | `output/init_classifications/<SAVE_NAME>-<N>/` (via `get_next_reclassify_dir`) |
+| 1.2 manual annotations | `output/manual_annotated/<SAVE_NAME>/annotations.json` |
+| 1.2 GCN training | `output/gcn_results/<SAVE_NAME>/` |
+| 2.1 full-frame model | `output/q2_1/` (fixed; one run per notebook session) |
+| 2.2 enhanced model | `output/q2_2/` (fixed; one run per notebook session) |
+
 - **Timestamped runs:** `YYYYMMDD-HHMMSS` prefix (e.g. `20260314-195748`)
 - **Reclassification reruns:** use `get_next_reclassify_dir` from `src/utils.py`; never reimplement the suffix-increment logic elsewhere
 - Expected pattern: if `20260314-195748-1` and `20260314-195748-3` exist, next dir is `20260314-195748-4`
+- **RELOAD_* variables** in `nb_main.py` short-circuit each stage by pointing to a prior run's output directory name
 
 ### Print logging tags
 
@@ -132,9 +146,11 @@ All modules prefix log lines with bracketed tags:
 | `[EXTRACT]` | feat_extract.py |
 | `[CLS]` | classification.py |
 | `[GCN]` | gcn.py |
-| `[CUT]` | utils.py (CUT wrapper) |
+| `[CUT]` | utils.py (CUT subprocess wrapper) |
+| `[VIDEO]` | utils.py (video I/O helpers) |
 | `[DATA]` | data.py |
-| `[Q2.1]` / `[Q2.2]` | baseline/enhanced model |
+| `[Q2.1]` | baseline_model.py |
+| `[ENH]` | enhanced_model.py |
 
 ### Code style
 
@@ -152,6 +168,7 @@ Each pipeline stage accepts a `reload` flag that skips recomputation and loads f
 ### Notebook (`nb_main.py`)
 
 - Must stay in the root directory; submitted as `.ipynb`
+- **Keep `nb_main.py` clean** — move any non-pipeline logic into `src/` or `scripts/`
 - All scripts beyond the main pipeline go in `scripts/`
 - Include `wget` / `git clone` auto-download lines for external models
 
@@ -207,6 +224,8 @@ Included in count: prose, in-text citations, footnotes.
 Excluded: diagrams, tables, equations, abstract, bibliography, appendices.
 
 Figures go in `paper/figs/`; reference with relative paths (e.g. `figs/my_fig.pdf`).
+
+**Marks require hardware and training time** — be explicit about what GPU was used and how long training took. Marks are not awarded for raw compute.
 
 ---
 

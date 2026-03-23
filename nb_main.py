@@ -104,8 +104,8 @@ if PRETRAINED_MODEL not in PRETRAINED_MODELS:
 FULLFRAME_MODEL  = "cut_finetuned_fullframe"   # 2.1: fine-tuned on full frames
 PATCH_MODEL      = "cut_finetuned_patches"      # 2.2: fine-tuned on 1.3 patches
 
-N_EPOCHS_FINETUNE = 10
-N_EPOCHS_DECAY    = 5
+N_EPOCHS_FINETUNE = 5
+N_EPOCHS_DECAY    = 3
 
 # %%
 # Which parts of pipeline to run?
@@ -146,8 +146,13 @@ RELOAD_GCN = "20260320-162455"
 # -- 1.3 --
 # RELOAD_TRAIN_SELECT = None
 
-# -- 2.1 & 2.2 --
-RUN_TRANSLATE_VIDEO = True
+# -- 2.1 --
+RUN_FINETUNE_21 = True
+RUN_TRANSLATE_VIDEO_21 = True
+
+# -- 2.2 --
+RUN_FINETUNE_22 = True
+RUN_TRANSLATE_VIDEO_22 = True
 
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
 reload_extract   = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
@@ -371,10 +376,10 @@ val_game, val_movie     = flat_paths_by_domain(split['val'])
 # %%
 cut_dir  = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
 q2_1_dir = os.path.join(SAVE_DIR, "q2_1")
- 
+
 ensure_pretrained_models(cut_dir)
- 
-# Build full-frame dataset at 1.1 detection timestamps
+
+# Build full-frame dataset — always run (testA/testB also needed by 2.2 evaluate)
 frame_dataroot = os.path.join(q2_1_dir, "cut_data")
 trainA, trainB, testA, testB = build_frame_dataset(
     selected_detections,
@@ -382,21 +387,21 @@ trainA, trainB, testA, testB = build_frame_dataset(
     frame_dataroot,
     n_per_domain=500,
 )
- 
-# Fine-tune from pretrained weights — produces FULLFRAME_MODEL checkpoint
-# (copies PRETRAINED_MODEL first, so original weights are never modified)
-finetune_cut_fullframe(
-    cut_dir, PRETRAINED_MODEL, FULLFRAME_MODEL, frame_dataroot, DEVICE,
-    n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
-)
- 
-# Evaluate in both directions
-metrics_2_1 = evaluate_translation(cut_dir, FULLFRAME_MODEL, testA, testB, q2_1_dir, DEVICE, tag="2.1")
- 
-# Translate test video
-if RUN_TRANSLATE_VIDEO:
-    baseline_video = translate_test_video(cut_dir, FULLFRAME_MODEL, TEST_PATH, q2_1_dir, DEVICE)
-    print(f"[2.1] Baseline video → {baseline_video}")
+
+if RUN_FINETUNE_21:
+    # Fine-tune from pretrained weights — produces FULLFRAME_MODEL checkpoint
+    # (copies PRETRAINED_MODEL first, so original weights are never modified)
+    finetune_cut_fullframe(
+        cut_dir, PRETRAINED_MODEL, FULLFRAME_MODEL, frame_dataroot, DEVICE,
+        n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
+    )
+
+    # Evaluate in both directions
+    metrics_2_1 = evaluate_translation(cut_dir, FULLFRAME_MODEL, testA, testB, q2_1_dir, DEVICE, tag="2.1")
+
+    if RUN_TRANSLATE_VIDEO_21:
+        baseline_video = translate_test_video(cut_dir, FULLFRAME_MODEL, TEST_PATH, q2_1_dir, DEVICE)
+        print(f"[2.1] Baseline video → {baseline_video}")
 
 # %% [markdown]
 # ## 2.2 Enhanced model
@@ -415,34 +420,35 @@ if RUN_TRANSLATE_VIDEO:
 #   4. Evaluate with same metrics as 2.1 for a fair comparison
 
 # %%
-q2_2_dir = os.path.join(SAVE_DIR, "q2_2")
+q2_2_dir = os.path.join(SAVE_DIR, "q2_2", SAVE_NAME)
 
-# YOLO for human detection in the test video (reuse same weights as 1.1)
-yolo_model = YOLO(os.path.join(PROJECT_ROOT, "models/yolov8m.pt"))
-yolo_model.to(DEVICE)
+if RUN_FINETUNE_22:
+    # YOLO for human detection in the test video (reuse same weights as 1.1)
+    yolo_model = YOLO(os.path.join(PROJECT_ROOT, "models/yolov8m.pt"))
+    yolo_model.to(DEVICE)
 
-# Fine-tune from the same pretrained base as 2.1 — produces PATCH_MODEL checkpoint
-finetune_cut_patches(
-    cut_dir, PRETRAINED_MODEL, PATCH_MODEL,
-    train_game, train_movie,
-    q2_2_dir, DEVICE,
-    n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
-)
- 
-# Evaluate patch model in both directions using same test splits as 2.1
-metrics_2_2 = evaluate_translation(cut_dir, PATCH_MODEL, testA, testB, q2_2_dir, DEVICE, tag="2.2")
- 
-# Translate test video with patch-level compositing + GCN filtering + temporal blending
-if RUN_TRANSLATE_VIDEO:
-    enhanced_video = translate_test_video_enhanced(
-        cut_dir, PATCH_MODEL, TEST_PATH, q2_2_dir, DEVICE,
-        yolo_model=yolo_model,
-        pose_model_path=os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
-        gcn_save_path=gcn_save_path,
-        gcn_hidden=128,
-        exclude_classes=["others"],
-        blend_alpha=0.3,
-        blur_threshold=10.0,
+    # Fine-tune from the same pretrained base as 2.1 — produces PATCH_MODEL checkpoint
+    finetune_cut_patches(
+        cut_dir, PRETRAINED_MODEL, PATCH_MODEL,
+        train_game, train_movie,
+        q2_2_dir, DEVICE,
+        n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
     )
-    print(f"[2.2] Enhanced video → {enhanced_video}")
+
+    # Evaluate patch model in both directions using same test splits as 2.1
+    metrics_2_2 = evaluate_translation(cut_dir, PATCH_MODEL, testA, testB, q2_2_dir, DEVICE, tag="2.2")
+
+    # Translate test video with patch-level compositing + GCN filtering + temporal blending
+    if RUN_TRANSLATE_VIDEO_22:
+        enhanced_video = translate_test_video_enhanced(
+            cut_dir, PATCH_MODEL, TEST_PATH, q2_2_dir, DEVICE,
+            yolo_model=yolo_model,
+            pose_model_path=os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
+            gcn_save_path=gcn_save_path,
+            gcn_hidden=128,
+            exclude_classes=["others"],
+            blend_alpha=0.3,
+            blur_threshold=10.0,
+        )
+        print(f"[2.2] Enhanced video → {enhanced_video}")
  

@@ -29,6 +29,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import warnings
 
 import cv2
 import lpips as lpips_lib
@@ -487,7 +488,7 @@ def evaluate_translation(
     movie_imgs = glob.glob(os.path.join(testB, "*.jpg"))
 
     g2m_fakes = run_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "g2m"), "AtoB", device)
-    m2g_fakes = run_inference(cut_dir, exp_name, make_inference_dataroot(testB, testA), os.path.join(results_dir, "m2g"), "BtoA", device)
+    m2g_fakes = run_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "m2g"), "BtoA", device)
 
     metrics = {
         "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"), game_imgs,  g2m_fakes, device),
