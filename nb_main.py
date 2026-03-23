@@ -48,6 +48,7 @@ from src.baseline_model import (
     compute_metrics,
     save_comparison_grid,
     save_umap,
+    evaluate_translation,
     PRETRAINED_MODELS,
 )
 from src.enhanced_model import (
@@ -300,6 +301,10 @@ else:
         else:
             ann_path = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS, "annotations.json")
         labelled_dir = os.path.dirname(ann_path)
+    elif GCN_LABEL_SOURCE == "rule":
+        labelled_dir = init_cls_save_path
+    else:
+        raise ValueError(f"Unknown GCN_LABEL_SOURCE '{GCN_LABEL_SOURCE}'. Use 'manual' or 'rule'.")
 
     results, summary, gcn_per_class_val_acc = run_gcn_pipeline(
         labelled_dir = labelled_dir,
@@ -385,27 +390,7 @@ finetune_cut_fullframe(
 )
  
 # Evaluate in both directions
-results_dir = os.path.join(q2_1_dir, "results")
-g2m_fakes = run_inference(cut_dir, FULLFRAME_MODEL, make_inference_dataroot(testA, testB), os.path.join(results_dir, "g2m"), "AtoB", DEVICE)
-m2g_fakes = run_inference(cut_dir, FULLFRAME_MODEL, make_inference_dataroot(testB, testA), os.path.join(results_dir, "m2g"), "BtoA", DEVICE)
- 
-metrics_2_1 = {
-    "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"), glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes, DEVICE),
-    "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake"), glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes, DEVICE),
-}
-for direction, vals in metrics_2_1.items():
-    print(f"[2.1] {direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
- 
-# Visualisations
-viz_dir = os.path.join(q2_1_dir, "viz")
-os.makedirs(viz_dir, exist_ok=True)
-with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
-    json.dump(metrics_2_1, f, indent=2)
- 
-save_comparison_grid(glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes, "game → movie (2.1)", os.path.join(viz_dir, "comparison_g2m.png"))
-save_comparison_grid(glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes, "movie → game (2.1)", os.path.join(viz_dir, "comparison_m2g.png"))
-save_umap([glob.glob(os.path.join(testA, "*.jpg")), glob.glob(os.path.join(testB, "*.jpg")), g2m_fakes], ["game (real)", "movie (real)", "game→movie (fake)"], ["steelblue", "tomato", "mediumpurple"], "VGG feature UMAP: game→movie (2.1)", os.path.join(viz_dir, "umap_g2m.png"), device=DEVICE)
-save_umap([glob.glob(os.path.join(testA, "*.jpg")), glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes], ["game (real)", "movie (real)", "movie→game (fake)"], ["steelblue", "tomato", "seagreen"], "VGG feature UMAP: movie→game (2.1)", os.path.join(viz_dir, "umap_m2g.png"), device=DEVICE)
+metrics_2_1 = evaluate_translation(cut_dir, FULLFRAME_MODEL, testA, testB, q2_1_dir, DEVICE, tag="2.1")
  
 # Translate test video
 if RUN_TRANSLATE_VIDEO:
@@ -430,11 +415,11 @@ if RUN_TRANSLATE_VIDEO:
 
 # %%
 q2_2_dir = os.path.join(SAVE_DIR, "q2_2")
- 
-# Reload YOLO from 1.1 for human detection during compositing
+
+# YOLO for human detection in the test video (reuse same weights as 1.1)
 yolo_model = YOLO(os.path.join(PROJECT_ROOT, "models/yolov8m.pt"))
 yolo_model.to(DEVICE)
- 
+
 # Fine-tune from the same pretrained base as 2.1 — produces PATCH_MODEL checkpoint
 finetune_cut_patches(
     cut_dir, PRETRAINED_MODEL, PATCH_MODEL,
@@ -444,34 +429,19 @@ finetune_cut_patches(
 )
  
 # Evaluate patch model in both directions using same test splits as 2.1
-results_dir = os.path.join(q2_2_dir, "results")
-g2m_fakes_enh = run_inference(cut_dir, PATCH_MODEL, make_inference_dataroot(testA, testB), os.path.join(results_dir, "g2m"), "AtoB", DEVICE)
-m2g_fakes_enh = run_inference(cut_dir, PATCH_MODEL, make_inference_dataroot(testB, testA), os.path.join(results_dir, "m2g"), "BtoA", DEVICE)
+metrics_2_2 = evaluate_translation(cut_dir, PATCH_MODEL, testA, testB, q2_2_dir, DEVICE, tag="2.2")
  
-metrics_2_2 = {
-    "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"), glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes_enh, DEVICE),
-    "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake"), glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes_enh, DEVICE),
-}
-for direction, vals in metrics_2_2.items():
-    print(f"[2.2] {direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
- 
-# Visualisations
-viz_dir = os.path.join(q2_2_dir, "viz")
-os.makedirs(viz_dir, exist_ok=True)
-with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
-    json.dump(metrics_2_2, f, indent=2)
- 
-save_comparison_grid(glob.glob(os.path.join(testA, "*.jpg")), g2m_fakes_enh, "game → movie (2.2)", os.path.join(viz_dir, "comparison_g2m.png"))
-save_comparison_grid(glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes_enh, "movie → game (2.2)", os.path.join(viz_dir, "comparison_m2g.png"))
-save_umap([glob.glob(os.path.join(testA, "*.jpg")), glob.glob(os.path.join(testB, "*.jpg")), g2m_fakes_enh], ["game (real)", "movie (real)", "game→movie (fake)"], ["steelblue", "tomato", "mediumpurple"], "VGG feature UMAP: game→movie (2.2)", os.path.join(viz_dir, "umap_g2m.png"), device=DEVICE)
-save_umap([glob.glob(os.path.join(testA, "*.jpg")), glob.glob(os.path.join(testB, "*.jpg")), m2g_fakes_enh], ["game (real)", "movie (real)", "movie→game (fake)"], ["steelblue", "tomato", "seagreen"], "VGG feature UMAP: movie→game (2.2)", os.path.join(viz_dir, "umap_m2g.png"), device=DEVICE)
- 
-# Translate test video with patch-level compositing + temporal blending
+# Translate test video with patch-level compositing + GCN filtering + temporal blending
 if RUN_TRANSLATE_VIDEO:
     enhanced_video = translate_test_video_enhanced(
         cut_dir, PATCH_MODEL, TEST_PATH, q2_2_dir, DEVICE,
         yolo_model=yolo_model,
+        pose_model_path=os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
+        gcn_save_path=gcn_save_path,
+        gcn_hidden=128,
+        exclude_classes=["others"],
         blend_alpha=0.3,
+        blur_threshold=10.0,
     )
     print(f"[2.2] Enhanced video → {enhanced_video}")
  

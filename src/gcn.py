@@ -838,6 +838,29 @@ def run_gcn_pipeline(
 # Ablation plot
 # ---------------------------------------------------------------------------
 
+def load_gcn_model(gcn_save_path: str, device: str, hidden: int = 128) -> PoseGCN:
+    """
+    Load a trained PoseGCN checkpoint from a gcn_results directory.
+
+    Args:
+        gcn_save_path : path to output/gcn_results/<run>/ containing gcn_model.pt.
+        device        : "cuda" | "mps" | "cpu".
+        hidden        : must match the hidden dimension used during training (default 128).
+
+    Returns:
+        PoseGCN in eval mode on the given device.
+    """
+    ckpt_path = os.path.join(gcn_save_path, "gcn_model.pt")
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(f"GCN checkpoint not found: {ckpt_path}")
+    model = PoseGCN(hidden=hidden)
+    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    model.to(device)
+    model.eval()
+    print(f"[GCN] Loaded checkpoint from {ckpt_path}")
+    return model
+
+
 def plot_annotation_ablation(
     rule_per_class_val_acc: dict,
     manual_per_class_val_acc: dict,

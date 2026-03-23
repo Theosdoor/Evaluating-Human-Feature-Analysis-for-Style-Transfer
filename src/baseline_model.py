@@ -24,6 +24,7 @@ Public API imported in nb_main.py:
 """
 
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -452,6 +453,60 @@ def save_umap(
     plt.savefig(out_path, dpi=150)
     plt.close()
     print(f"[CUT] Saved → {out_path}")
+
+
+def evaluate_translation(
+    cut_dir: str,
+    exp_name: str,
+    testA: str,
+    testB: str,
+    out_dir: str,
+    device: str,
+    tag: str,
+) -> dict:
+    """
+    Run inference, metrics, and visualisations for both translation directions.
+
+    Combines run_inference + compute_metrics + save_comparison_grid + save_umap
+    so the same evaluation pattern isn't duplicated for each Q2 model.
+
+    Args:
+        cut_dir  : root of the CUT repo clone.
+        exp_name : checkpoint to evaluate.
+        testA    : directory of game test frames (domain A).
+        testB    : directory of movie test frames (domain B).
+        out_dir  : output root (e.g. output/q2_1/ or output/q2_2/).
+        device   : "cuda" | "cpu".
+        tag      : label used in print output and figure titles (e.g. "2.1").
+
+    Returns:
+        metrics dict {"game→movie": {...}, "movie→game": {...}}
+    """
+    results_dir = os.path.join(out_dir, "results")
+    game_imgs  = glob.glob(os.path.join(testA, "*.jpg"))
+    movie_imgs = glob.glob(os.path.join(testB, "*.jpg"))
+
+    g2m_fakes = run_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "g2m"), "AtoB", device)
+    m2g_fakes = run_inference(cut_dir, exp_name, make_inference_dataroot(testB, testA), os.path.join(results_dir, "m2g"), "BtoA", device)
+
+    metrics = {
+        "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"), game_imgs,  g2m_fakes, device),
+        "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake"), movie_imgs, m2g_fakes, device),
+    }
+    for direction, vals in metrics.items():
+        print(f"[{tag}] {direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))
+
+    viz_dir = os.path.join(out_dir, "viz")
+    os.makedirs(viz_dir, exist_ok=True)
+    with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
+        json.dump(metrics, f, indent=2)
+
+    save_comparison_grid(game_imgs,  g2m_fakes, f"game → movie ({tag})", os.path.join(viz_dir, "comparison_g2m.png"))
+    save_comparison_grid(movie_imgs, m2g_fakes, f"movie → game ({tag})", os.path.join(viz_dir, "comparison_m2g.png"))
+    save_umap([game_imgs, movie_imgs, g2m_fakes], ["game (real)", "movie (real)", "game→movie (fake)"], ["steelblue", "tomato", "mediumpurple"], f"VGG feature UMAP: game→movie ({tag})", os.path.join(viz_dir, "umap_g2m.png"), device=device)
+    save_umap([game_imgs, movie_imgs, m2g_fakes], ["game (real)", "movie (real)", "movie→game (fake)"], ["steelblue", "tomato", "seagreen"],    f"VGG feature UMAP: movie→game ({tag})", os.path.join(viz_dir, "umap_m2g.png"), device=device)
+
+    return metrics
 
 
 def _vgg_features(

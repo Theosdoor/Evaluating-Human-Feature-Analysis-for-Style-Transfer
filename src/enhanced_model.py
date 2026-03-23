@@ -9,9 +9,11 @@ Pipeline
 
 2. translate_test_video_enhanced
                           — for each test frame:
-                              a. run YOLO (from 1.1) to detect human bboxes
-                              b. crop each human region, resize to 256×256
-                              c. translate the crop with the fine-tuned CUT model
+                              a. detect humans using feat_extract (every frame,
+                                 lenient blur, no scene-change skip)
+                              b. classify patches with the trained 1.2 GCN;
+                                 filter out unwanted classes (e.g. 'others')
+                              c. translate kept crops in one batched CUT call
                               d. resize translated crop back to original bbox dims
                               e. paste onto the original (untranslated) frame
                               f. optionally apply temporal blending (step 3)
@@ -23,9 +25,11 @@ Pipeline
 
 Relationship to Section 1
 --------------------------
-  1.1  — YOLO detection provides bounding boxes for human region extraction.
-  1.2  — Classification labels are used to optionally filter which detection
-          classes receive style transfer (e.g. skip 'others').
+  1.1  — extract_humans_from_video (feat_extract) provides detections with
+          bboxes; reused here with yolo_interval=1, scene_change_threshold=0
+          to cover every frame of the test video.
+  1.2  — Trained GCN (load_gcn_model + run_inference) filters patches to the
+          four human-pose classes, skipping 'others' and any other exclusions.
   1.3  — Selected patches form the fine-tuning dataset passed to
           finetune_cut_patches.
 
@@ -36,6 +40,7 @@ Public API imported in nb_main.py:
 """
 
 import glob
+import json
 import os
 import shutil
 import tempfile
@@ -132,28 +137,29 @@ def translate_test_video_enhanced(
     save_dir: str,
     device: str,
     yolo_model,
+    pose_model_path: str,
+    gcn_save_path: str,
+    gcn_hidden: int = 128,
     output_name: str = "enhanced_model.mp4",
-    allowed_classes: list[str] | None = None,
+    exclude_classes: list[str] | None = None,
+    direction: str = "AtoB",
     blend_alpha: float = 0.3,
-    yolo_conf: float = 0.4,
+    blur_threshold: float = 10.0,
     patch_size: int = 256,
 ) -> str:
     """
-    Apply patch-level style transfer to human regions in the test video.
+    Apply patch-level style transfer to human regions in the test video,
+    using the 1.2 GCN to filter which patches receive translation.
 
-    For each frame:
-      1. Detect human bounding boxes with YOLO (from Q1.1).
-      2. Optionally filter by GCN class (allowed_classes from Q1.2).
-      3. Crop each human region, translate with fine-tuned CUT.
+    For each test frame:
+      1. Detect human bounding boxes with YOLO (every frame, no scene-change
+         skip, lenient blur threshold).
+      2. Classify patches with the trained GCN; drop excluded classes.
+      3. Translate all kept crops in one batched CUT call.
       4. Resize translated crop back to original bbox dimensions.
       5. Composite onto the original frame (background untouched).
-      6. Apply temporal blending with the previous frame's translated crop
-         for the same region to reduce flicker (blend_alpha controls strength).
-
-    This produces a video that differs visibly from the Q2.1 baseline:
-      - Background retains original game appearance.
-      - Human regions carry the movie colour/texture style.
-      - Temporal blending reduces per-frame flickering artefacts.
+      6. Apply temporal blending (EMA) between consecutive frames to reduce
+         flicker (blend_alpha controls strength).
 
     Args:
         cut_dir         : root of the CUT repo clone.
@@ -162,75 +168,102 @@ def translate_test_video_enhanced(
         save_dir        : output directory (output/q2_2/).
         device          : "cuda" | "cpu".
         yolo_model      : loaded ultralytics YOLO instance (reused from 1.1).
+        pose_model_path : path to YOLO pose model weights (for GCN keypoints).
+        gcn_save_path   : path to output/gcn_results/<run>/ containing
+                          gcn_model.pt (trained in 1.2).
+        gcn_hidden      : hidden dim of the GCN — must match training (default 128).
         output_name     : filename for the output mp4.
-        allowed_classes : GCN class names to translate; None = translate all
-                          detections. E.g. ['full_body_front', 'head_shoulder_front']
-                          to skip back-facing and ambiguous patches.
-        blend_alpha     : temporal blend weight in [0, 1].  The translated
-                          crop for frame t is blended as:
+        exclude_classes : class names to skip during compositing.
+                          Defaults to ['others'] if None.
+        blend_alpha     : temporal blend weight in [0, 1].
                               out = alpha * prev_crop + (1-alpha) * curr_crop
-                          Set to 0.0 to disable blending.
-        yolo_conf       : YOLO detection confidence threshold.
+                          Set to 0.0 to disable.
+        blur_threshold  : Laplacian variance floor for patch acceptance.
+                          Lower = more lenient. Applies to both film and game.
         patch_size      : size to resize crops to before CUT inference.
 
     Returns:
         Path to the output video.
     """
+    from ultralytics import YOLO as _YOLO
+    from src.gcn import load_gcn_model, extract_and_save_keypoints, load_keypoints
+    from src.gcn import run_inference as gcn_run_inference
+
     os.makedirs(save_dir, exist_ok=True)
 
     cap = cv2.VideoCapture(test_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps   = cap.get(cv2.CAP_PROP_FPS)
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    # --- Step 1: translate every frame with the patch-fine-tuned model ----
-    # We still need a CUT inference pass over the full frames to get all
-    # translated crops — we translate each detected human crop individually.
-    # To avoid running CUT crop-by-crop (slow subprocess per image), we:
-    #   a. extract all crops from all frames into a flat directory
-    #   b. run a single batched CUT inference pass
-    #   c. composite each translated crop back into its source frame
-
+    # --- Step 1: Extract all frames to disk (needed for compositing) ------
+    # Save at original resolution so YOLO bbox coordinates stay valid.
     frames_dir = os.path.join(save_dir, "test_frames")
-    frame_paths = extract_video_frames(test_path, frames_dir, size=(1280, 720), quality=95)
+    frame_paths = extract_video_frames(test_path, frames_dir, size=(orig_w, orig_h), quality=95)
 
-    crop_dir         = os.path.join(save_dir, "crops_original")
-    crop_metadata    = _extract_all_crops(
-        frame_paths, yolo_model, crop_dir,
-        allowed_classes=allowed_classes,
-        conf=yolo_conf,
+    # --- Step 2: Detect + save human patches from every frame -------------
+    patch_dir = os.path.join(save_dir, "test_patches")
+    crop_metadata = _extract_test_patches(
+        test_path, yolo_model, frame_paths, patch_dir,
+        blur_threshold=blur_threshold,
         patch_size=patch_size,
     )
 
     if not crop_metadata:
         print("[ENH] Warning: no crops extracted — falling back to full-frame translation.")
         from src.baseline_model import translate_test_video
-        return translate_test_video(
-            cut_dir, exp_name, test_path, save_dir, device, output_name
-        )
+        return translate_test_video(cut_dir, exp_name, test_path, save_dir, device, output_name)
 
-    # --- Step 2: translate all crops in one batched CUT call --------------
-    translated_crop_dir = os.path.join(save_dir, "crops_translated")
-    translated_paths = _translate_crops(
-        cut_dir, exp_name, crop_dir, translated_crop_dir, device
+    # --- Step 3: GCN inference → filter patches by class ------------------
+    npz_path = os.path.join(patch_dir, "_keypoints.npz")
+    if os.path.exists(npz_path):
+        keypoints_dict = load_keypoints(npz_path)
+        print(f"[ENH] Loaded cached keypoints ({len(keypoints_dict)} patches)")
+    else:
+        pose_model = _YOLO(pose_model_path)
+        pose_model.to(device)
+        keypoints_dict = extract_and_save_keypoints(pose_model, patch_dir, npz_path)
+
+    gcn_model = load_gcn_model(gcn_save_path, device, hidden=gcn_hidden)
+    all_fnames = sorted(os.path.basename(p) for p in glob.glob(os.path.join(patch_dir, "*.jpg")))
+    gcn_results = gcn_run_inference(gcn_model, all_fnames, keypoints_dict, device)
+
+    exclude_set = set(exclude_classes if exclude_classes is not None else ["others"])
+    kept_stems = {
+        os.path.splitext(fn)[0]
+        for fn, cls in gcn_results.items()
+        if cls not in exclude_set
+    }
+    print(
+        f"[ENH] GCN kept {len(kept_stems)}/{len(gcn_results)} patches "
+        f"(excluded: {sorted(exclude_set)})"
     )
 
-    # Build a lookup: crop_stem → translated_path
+    crop_metadata = [m for m in crop_metadata if m["crop_stem"] in kept_stems]
+    if not crop_metadata:
+        print("[ENH] Warning: no patches remain after GCN filtering — "
+              "falling back to full-frame translation.")
+        from src.baseline_model import translate_test_video
+        return translate_test_video(cut_dir, exp_name, test_path, save_dir, device, output_name)
+
+    # --- Step 4: Translate all kept crops in one batched CUT call ---------
+    # _translate_crops runs CUT over all .jpg in patch_dir; _composite_frames
+    # only composites stems present in crop_metadata, so filtered-out patches
+    # are translated but never pasted (acceptable overhead).
+    translated_crop_dir = os.path.join(save_dir, "crops_translated")
+    translated_paths = _translate_crops(cut_dir, exp_name, patch_dir, translated_crop_dir, device, direction)
     translated_map = {
         os.path.splitext(os.path.basename(p))[0]: p
         for p in translated_paths
     }
 
-    # --- Step 3: composite translated crops back onto original frames -----
+    # --- Step 5: Composite translated crops back onto original frames -----
     composited_dir = os.path.join(save_dir, "composited_frames")
     os.makedirs(composited_dir, exist_ok=True)
-
     composited_paths = _composite_frames(
-        frame_paths,
-        crop_metadata,
-        translated_map,
-        composited_dir,
-        blend_alpha=blend_alpha,
-        patch_size=patch_size,
+        frame_paths, crop_metadata, translated_map,
+        composited_dir, blend_alpha=blend_alpha, patch_size=patch_size,
     )
 
     return write_video(composited_paths, os.path.join(save_dir, output_name), fps)
@@ -240,90 +273,82 @@ def translate_test_video_enhanced(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _extract_all_crops(
-    frame_paths: list[str],
+def _extract_test_patches(
+    test_path: str,
     yolo_model,
-    crop_dir: str,
-    allowed_classes: list[str] | None,
-    conf: float,
+    frame_paths: list[str],
+    patch_dir: str,
+    blur_threshold: float,
     patch_size: int,
 ) -> list[dict]:
     """
-    Run YOLO over all frames and save each human crop as a JPEG.
+    Run YOLO on every frame of test_path via feat_extract and save crops.
 
-    Returns a list of metadata dicts:
-        {
-          frame_idx : int,
-          frame_path: str,
-          crop_stem : str,       # stem of the saved crop file
-          bbox      : (x1,y1,x2,y2),  # pixel coords in ORIGINAL frame size
-          gcn_class : str | None,
-        }
+    Uses extract_humans_from_video with yolo_interval=1 and
+    scene_change_threshold=0 so no frames are skipped. blur_threshold is
+    applied uniformly (overriding the film/game split used in 1.1).
 
-    Crops are saved to crop_dir/<frame_idx>_<det_idx>.jpg at patch_size×patch_size.
+    Returns crop_metadata: list of dicts compatible with _composite_frames:
+        {frame_idx, frame_path, crop_stem, bbox, gcn_class}
     """
-    os.makedirs(crop_dir, exist_ok=True)
+    from src.feat_extract import extract_humans_from_video
 
-    existing_crops = glob.glob(os.path.join(crop_dir, "*.jpg"))
-    if existing_crops:
-        print(f"[ENH] Crops already extracted ({len(existing_crops)}), loading metadata.")
-        return _reload_crop_metadata(crop_dir)
+    os.makedirs(patch_dir, exist_ok=True)
+
+    meta_path = os.path.join(patch_dir, "_metadata.json")
+    if os.path.exists(meta_path):
+        print(f"[ENH] Test patches already cached, reloading metadata.")
+        return _reload_crop_metadata(patch_dir)
+
+    detections = extract_humans_from_video(
+        yolo_model, test_path,
+        yolo_interval=1,
+        scene_change_threshold=0,
+        blur_threshold_film=blur_threshold,
+        blur_threshold_game=blur_threshold,
+    )
+
+    # Group by frame_num to assign a stable det_idx within each frame
+    by_frame: dict[int, list] = {}
+    for det in detections:
+        by_frame.setdefault(det["frame_num"], []).append(det)
 
     metadata = []
-    for frame_idx, frame_path in enumerate(tqdm(frame_paths, desc="Extracting crops")):
-        frame = cv2.imread(frame_path)
-        if frame is None:
-            continue
-        fh, fw = frame.shape[:2]
-
-        results = yolo_model(frame, classes=[0], conf=conf, verbose=False)
-        if not results or results[0].boxes is None:
-            continue
-
-        boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
-        for det_idx, box in enumerate(boxes):
-            x1, y1, x2, y2 = (
-                max(0, box[0]), max(0, box[1]),
-                min(fw, box[2]), min(fh, box[3]),
-            )
-            if x2 <= x1 or y2 <= y1:
+    for frame_num in sorted(by_frame):
+        fp = frame_paths[frame_num] if frame_num < len(frame_paths) else None
+        for det_idx, det in enumerate(by_frame[frame_num]):
+            patch = det.get("patch")
+            if patch is None or patch.size == 0:
                 continue
-
-            crop = frame[y1:y2, x1:x2]
-            crop_resized = cv2.resize(crop, (patch_size, patch_size))
-
-            stem = f"f{frame_idx:05d}_d{det_idx:02d}"
-            crop_path = os.path.join(crop_dir, stem + ".jpg")
-            cv2.imwrite(crop_path, crop_resized, [cv2.IMWRITE_JPEG_QUALITY, 92])
-
+            stem = f"f{frame_num:06d}_d{det_idx:04d}"
+            cv2.imwrite(
+                os.path.join(patch_dir, stem + ".jpg"),
+                cv2.resize(patch, (patch_size, patch_size)),
+                [cv2.IMWRITE_JPEG_QUALITY, 92],
+            )
             metadata.append({
-                "frame_idx":  frame_idx,
-                "frame_path": frame_path,
+                "frame_idx":  frame_num,
+                "frame_path": fp,
                 "crop_stem":  stem,
-                "bbox":       (x1, y1, x2, y2),
-                "gcn_class":  None,  # populated below if allowed_classes is set
+                "bbox":       det["bbox"],
+                "gcn_class":  None,
             })
 
-    print(f"[ENH] Extracted {len(metadata)} crops from {len(frame_paths)} frames")
-    _save_crop_metadata(metadata, crop_dir)
+    print(f"[ENH] Extracted {len(metadata)} test patches → {patch_dir}")
+    _save_crop_metadata(metadata, patch_dir)
     return metadata
 
 
-def _save_crop_metadata(metadata: list[dict], crop_dir: str) -> None:
-    import json
-    # bbox tuples aren't JSON-serialisable directly
-    serialisable = [
-        {**m, "bbox": list(m["bbox"])} for m in metadata
-    ]
-    with open(os.path.join(crop_dir, "_metadata.json"), "w") as f:
+def _save_crop_metadata(metadata: list[dict], patch_dir: str) -> None:
+    serialisable = [{**m, "bbox": list(m["bbox"])} for m in metadata]
+    with open(os.path.join(patch_dir, "_metadata.json"), "w") as f:
         json.dump(serialisable, f)
 
 
-def _reload_crop_metadata(crop_dir: str) -> list[dict]:
-    import json
-    meta_path = os.path.join(crop_dir, "_metadata.json")
+def _reload_crop_metadata(patch_dir: str) -> list[dict]:
+    meta_path = os.path.join(patch_dir, "_metadata.json")
     if not os.path.exists(meta_path):
-        print("[ENH] Warning: no _metadata.json found in crop_dir — re-extract crops.")
+        print("[ENH] Warning: no _metadata.json found — re-extract patches.")
         return []
     with open(meta_path) as f:
         raw = json.load(f)
@@ -336,6 +361,7 @@ def _translate_crops(
     crop_dir: str,
     translated_dir: str,
     device: str,
+    direction: str = "AtoB",
 ) -> list[str]:
     """
     Run a single batched CUT inference pass over all crops in crop_dir.
@@ -348,8 +374,6 @@ def _translate_crops(
         print(f"[ENH] Translated crops already present ({len(existing)}), skipping.")
         return existing
 
-    # CUT needs trainA and trainB; we only care about AtoB (game→movie),
-    # so trainB just needs one image to satisfy the dataloader.
     dataroot = tempfile.mkdtemp()
     trainA   = os.path.join(dataroot, "trainA")
     trainB   = os.path.join(dataroot, "trainB")
@@ -365,13 +389,13 @@ def _translate_crops(
     # Dummy trainB entry so CUT's dataloader doesn't complain.
     shutil.copy(crop_files[0], os.path.join(trainB, "dummy.jpg"))
 
-    print(f"[ENH] Translating {len(crop_files)} crops with {exp_name}…")
+    print(f"[ENH] Translating {len(crop_files)} crops with {exp_name} ({direction})…")
     translated = run_cut_inference(
         cut_dir     = cut_dir,
         exp_name    = exp_name,
         dataroot    = dataroot,
         results_dir = translated_dir,
-        direction   = "AtoB",
+        direction   = direction,
         device      = device,
     )
     print(f"[ENH] {len(translated)} crops translated")
@@ -395,7 +419,6 @@ def _composite_frames(
 
     Returns sorted list of composited frame paths.
     """
-    # Group metadata by frame_idx for efficient lookup
     by_frame: dict[int, list[dict]] = {}
     for m in crop_metadata:
         by_frame.setdefault(m["frame_idx"], []).append(m)
@@ -413,10 +436,10 @@ def _composite_frames(
 
         frame = cv2.imread(frame_path)
         if frame is None:
+            print(f"[ENH] Warning: could not read {frame_path}, skipping frame.")
             continue
 
-        detections = by_frame.get(frame_idx, [])
-        for m in detections:
+        for m in by_frame.get(frame_idx, []):
             stem = m["crop_stem"]
             translated_path = translated_map.get(stem)
             if translated_path is None or not os.path.exists(translated_path):
@@ -432,10 +455,9 @@ def _composite_frames(
             if translated_crop is None:
                 continue
 
-            # Resize translated crop back to original bbox dimensions
             translated_crop = cv2.resize(translated_crop, (target_w, target_h))
 
-            # Temporal blending: EMA with previous crop for this detection slot
+            # Temporal blending: EMA keyed by det_idx within the frame stem
             det_idx = int(stem.split("_d")[-1])
             if blend_alpha > 0 and det_idx in prev_crops:
                 prev = prev_crops[det_idx]
@@ -447,8 +469,6 @@ def _composite_frames(
                     )
 
             prev_crops[det_idx] = translated_crop.copy()
-
-            # Paste onto frame — simple rectangular composite
             frame[y1:y2, x1:x2] = translated_crop
 
         cv2.imwrite(out_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
