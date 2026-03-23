@@ -318,6 +318,13 @@ def finetune_cut(
 
     gpu_ids = "0" if device == "cuda" else "-1"
 
+    # Only resume if latest checkpoints are actually present in dst_ckpt_dir.
+    # The pretrained checkpoint may not include all networks (e.g. net_F), so
+    # blindly passing --continue_train causes a FileNotFoundError on first run.
+    has_checkpoint = bool(
+        glob.glob(os.path.join(dst_ckpt_dir, "latest_net_*.pth"))
+    )
+
     cmd = [
         sys.executable, os.path.join(cut_dir, "train.py"),
         "--dataroot",        dataroot,
@@ -332,8 +339,9 @@ def finetune_cut(
         "--n_epochs_decay",  str(n_epochs_decay),
         "--display_id",      "-1",   # no visdom
         "--no_html",
-        "--continue_train",  # always resume from the copied checkpoint
     ]
+    if has_checkpoint:
+        cmd.append("--continue_train")
 
     print(f"[CUT] Fine-tuning {finetune_exp} for {n_epochs}+{n_epochs_decay} epochs…")
     subprocess.run(cmd, check=True, cwd=cut_dir)
