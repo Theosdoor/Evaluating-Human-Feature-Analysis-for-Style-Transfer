@@ -318,11 +318,13 @@ def finetune_cut(
 
     gpu_ids = "0" if device == "cuda" else "-1"
 
-    # Only resume if latest checkpoints are actually present in dst_ckpt_dir.
+    # Only resume if ALL required CUT networks are present in dst_ckpt_dir.
     # The pretrained checkpoint may not include all networks (e.g. net_F), so
     # blindly passing --continue_train causes a FileNotFoundError on first run.
-    has_checkpoint = bool(
-        glob.glob(os.path.join(dst_ckpt_dir, "latest_net_*.pth"))
+    # CUT requires: net_G, net_D, and net_F
+    required_nets = ["latest_net_G.pth", "latest_net_D.pth", "latest_net_F.pth"]
+    has_checkpoint = all(
+        os.path.isfile(os.path.join(dst_ckpt_dir, net)) for net in required_nets
     )
 
     cmd = [

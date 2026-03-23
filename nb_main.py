@@ -104,7 +104,8 @@ if PRETRAINED_MODEL not in PRETRAINED_MODELS:
 FULLFRAME_MODEL  = "cut_finetuned_fullframe"   # 2.1: fine-tuned on full frames
 PATCH_MODEL      = "cut_finetuned_patches"      # 2.2: fine-tuned on 1.3 patches
 
-
+N_EPOCHS_FINETUNE = 10
+N_EPOCHS_DECAY    = 5
 
 # %%
 # Which parts of pipeline to run?
@@ -386,7 +387,7 @@ trainA, trainB, testA, testB = build_frame_dataset(
 # (copies PRETRAINED_MODEL first, so original weights are never modified)
 finetune_cut_fullframe(
     cut_dir, PRETRAINED_MODEL, FULLFRAME_MODEL, frame_dataroot, DEVICE,
-    n_epochs=20, n_epochs_decay=10,
+    n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
 )
  
 # Evaluate in both directions
@@ -425,7 +426,7 @@ finetune_cut_patches(
     cut_dir, PRETRAINED_MODEL, PATCH_MODEL,
     train_game, train_movie,
     q2_2_dir, DEVICE,
-    n_epochs=20, n_epochs_decay=10,
+    n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
 )
  
 # Evaluate patch model in both directions using same test splits as 2.1
