@@ -1,7 +1,6 @@
 downloaded_data
 models
 output
-submit_job.sh
 external/
 
 *.err
