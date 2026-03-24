@@ -601,7 +601,7 @@ def run_inference(
     has_det   = [f for f in all_fnames if keypoints_dict.get(f) is not None]
 
     for fname in no_det:
-        results[fname] = "others"
+        results[fname] = "no_pose"
 
     # Build graphs for patches with detections
     graphs = [

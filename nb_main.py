@@ -348,7 +348,7 @@ if RUN_FINETUNE_22:
             yolo_model=yolo_model,
             pose_model_path=POSE_MODEL_PATH,
             gcn_save_path=gcn_save_path,
-            exclude_classes=["others"],
+            exclude_classes=["others"],   # "no_pose" kept — YOLO confirmed human
             blend_alpha=0.3,
             blur_threshold=10.0,
         )

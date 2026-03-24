@@ -213,6 +213,11 @@ def run_stgcn_inference(
 
     stem_to_track = assign_track_ids(crop_metadata, iou_threshold)
 
+    # Track stems with no pose detection — these will be labelled "no_pose"
+    # after inference rather than silently getting zero-filled keypoints that
+    # the model maps to "others".
+    no_pose_stems: set[str] = set()
+
     # Per-track ordered history: {track_id: [(stem, kps [17,3], bbox [4]), ...]}
     track_history: dict[int, list] = {}
     for m in sorted(crop_metadata, key=lambda x: x["frame_idx"]):
@@ -223,6 +228,7 @@ def run_stgcn_inference(
             kps  = entry["kps"]
             bbox = entry["bbox"]
         else:
+            no_pose_stems.add(stem)
             bbox = np.array(m["bbox"], dtype=np.float32)
             kps  = np.zeros((NUM_NODES, 3), dtype=np.float32)
         track_history.setdefault(tid, []).append((stem, kps, bbox))
@@ -274,5 +280,11 @@ def run_stgcn_inference(
 
             for stem, pred in zip(batch_stems, preds):
                 results[stem + ".jpg"] = IDX_TO_LABEL[pred]
+
+    # Override: patches with no pose detection should not be classified as
+    # "others" just because zero keypoints pushed them there — label them
+    # "no_pose" so callers can decide independently whether to composite them.
+    for stem in no_pose_stems:
+        results[stem + ".jpg"] = "no_pose"
 
     return results
