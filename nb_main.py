@@ -265,6 +265,11 @@ else:
 # GCN Classification
 from src.gcn import run_gcn_pipeline, reload_gcn_results, plot_annotation_ablation
 
+# Committed checkpoint produced from manual annotations (one-time human effort).
+# Used by RUN_FULL_PIPELINE=True to run inference on fresh patches without retraining.
+GCN_PRETRAINED_CKPT = os.path.join(PROJECT_ROOT, "checkpoints", "gcn_model.pt")
+GCN_HIDDEN = 128
+
 gcn_save_path = os.path.join(SAVE_DIR, "gcn_results", reload_gcn or SAVE_NAME)
 
 gcn_params = dict(
@@ -273,7 +278,7 @@ gcn_params = dict(
     device          = DEVICE,
     lr              = 3e-4,
     epochs          = 300,
-    hidden          = 128,
+    hidden          = GCN_HIDDEN,
     dropout         = 0.1,
     batch_size      = 256,
     # exclude_classes = ['others'],  # including 'others' is actually really important for generalising!!
@@ -283,6 +288,36 @@ gcn_params = dict(
 if reload_gcn:
     results, summary = reload_gcn_results(gcn_save_path)
     print(f"[GCN] Reloaded GCN results from {gcn_save_path} (total={sum(summary.values())})")
+elif os.path.exists(GCN_PRETRAINED_CKPT):
+    # Full-pipeline run: load committed checkpoint, run inference on freshly extracted patches.
+    # Skips retraining (which requires manual annotations tied to a specific extraction run).
+    import glob as _glob
+    import shutil as _shutil
+    from src.gcn import load_gcn_model, run_inference as gcn_run_inference
+    from src.gcn import extract_and_save_keypoints, load_keypoints, save_gcn_results
+
+    os.makedirs(gcn_save_path, exist_ok=True)
+    _shutil.copy(GCN_PRETRAINED_CKPT, os.path.join(gcn_save_path, "gcn_model.pt"))
+
+    npz_path = os.path.join(extract_save_path, "_keypoints.npz")
+    if os.path.exists(npz_path):
+        keypoints_dict = load_keypoints(npz_path)
+        print(f"[GCN] Loaded cached keypoints ({len(keypoints_dict)} patches)")
+    else:
+        from ultralytics import YOLO as _YOLO
+        _pose_model = _YOLO(POSE_MODEL_PATH)
+        _pose_model.to(DEVICE)
+        keypoints_dict = extract_and_save_keypoints(_pose_model, extract_save_path, npz_path)
+
+    gcn_model = load_gcn_model(gcn_save_path, DEVICE, hidden=GCN_HIDDEN)
+    all_fnames = sorted(
+        os.path.basename(p)
+        for p in _glob.glob(os.path.join(extract_save_path, "*.jpg")) +
+                 _glob.glob(os.path.join(extract_save_path, "*.png"))
+    )
+    results = gcn_run_inference(gcn_model, all_fnames, keypoints_dict, DEVICE)
+    summary = save_gcn_results(results, extract_save_path, gcn_save_path, per_class_val_acc=None)
+    print(f"[GCN] Inference complete (pretrained ckpt): {sum(summary.values())} patches classified")
 else:
     if GCN_LABEL_SOURCE == "manual":
         if not RELOAD_ANNOTATIONS:
