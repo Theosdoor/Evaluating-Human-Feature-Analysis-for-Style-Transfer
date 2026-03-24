@@ -116,8 +116,17 @@ def build_frame_dataset(
     _make_held_out_split(trainA, testA, force=a_rebuilt)
     _make_held_out_split(trainB, testB, force=b_rebuilt)
 
-    print(f"[CUT] trainA (game):  {len(glob.glob(os.path.join(trainA, '*.jpg')))} frames")
-    print(f"[CUT] trainB (movie): {len(glob.glob(os.path.join(trainB, '*.jpg')))} frames")
+    na = len(glob.glob(os.path.join(trainA, "*.jpg")))
+    nb = len(glob.glob(os.path.join(trainB, "*.jpg")))
+    nta = len(glob.glob(os.path.join(testA, "*.jpg")))
+    ntb = len(glob.glob(os.path.join(testB, "*.jpg")))
+    print(f"[CUT] trainA (game):  {na} frames  testA: {nta}")
+    print(f"[CUT] trainB (movie): {nb} frames  testB: {ntb}")
+    if nta == 0 or ntb == 0:
+        raise RuntimeError(
+            f"build_frame_dataset: test split is empty (testA={nta}, testB={ntb}). "
+            "Check that video files are accessible and selected_detections is non-empty."
+        )
     return trainA, trainB, testA, testB
 
 
@@ -427,6 +436,17 @@ def evaluate_translation(
     results_dir = os.path.join(out_dir, "results")
     game_imgs  = glob.glob(os.path.join(testA, "*.jpg"))
     movie_imgs = glob.glob(os.path.join(testB, "*.jpg"))
+
+    if not game_imgs:
+        raise RuntimeError(
+            f"evaluate_translation: testA is empty: {testA}\n"
+            "Re-run build_frame_dataset (check that game video is accessible)."
+        )
+    if not movie_imgs:
+        raise RuntimeError(
+            f"evaluate_translation: testB is empty: {testB}\n"
+            "Re-run build_frame_dataset (check that movie videos are accessible)."
+        )
 
     g2m_fakes = run_cut_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "g2m"), "AtoB", device)
     m2g_fakes = run_cut_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "m2g"), "BtoA", device)
