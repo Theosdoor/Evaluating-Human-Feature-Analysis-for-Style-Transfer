@@ -18,7 +18,11 @@ echo "------------------------------------------------------"
 
 # Run the experiments
 # python scripts/train_gcn.py \
-#     --extract-dir output/extracted_humans/20260314-195748 \
+#     --extract-dir output/extracted_humans/20260324-185427 \
 #     --label-source manual \
-#     --annotations output/manual_annotated/20260314-195748-6
+#     --annotations output/manual_annotated/20260324-185427-1
+# python scripts/train_gcn.py \
+#         --extract-dir  output/extracted_humans/20260324-185427 \
+#         --label-source rule \
+#         --pose-model   models/yolo26m-pose.pt 
 python3 nb_main.py

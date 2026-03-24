@@ -2,6 +2,7 @@ downloaded_data/
 models/
 output/
 external/
+submit/ 
 
 *.err
 wandb/
