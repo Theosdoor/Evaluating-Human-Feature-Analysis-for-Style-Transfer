@@ -491,8 +491,8 @@ def evaluate_translation(
     m2g_fakes = run_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "m2g"), "BtoA", device)
 
     metrics = {
-        "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake"), game_imgs,  g2m_fakes, device),
-        "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake"), movie_imgs, m2g_fakes, device),
+        "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake_M"), game_imgs,  g2m_fakes, device),
+        "movie→game": compute_metrics(testA, os.path.join(results_dir, "m2g", "fake_G"), movie_imgs, m2g_fakes, device),
     }
     for direction, vals in metrics.items():
         print(f"[{tag}] {direction}:  " + "  ".join(f"{k}: {v:.4f}" for k, v in vals.items()))

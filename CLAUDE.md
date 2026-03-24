@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI assistant guide for the ACV (Advanced Computer Vision) coursework repository.
 
-> **Also read:** [`AGENTS.md`](AGENTS.md) for additional agent-specific rules. [`paper/AGENTS.md`](paper/AGENTS.md) for paper-writing rules. Do **not** read or edit files in `cswk_notes/`.
+> **Also read:** [`paper/AGENTS.md`](paper/AGENTS.md) for paper-writing rules. Do **not** read or edit files in `cswk_notes/`.
 
 ---
 

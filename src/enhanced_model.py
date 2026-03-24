@@ -240,12 +240,12 @@ def translate_test_video_enhanced(
         f"(excluded: {sorted(exclude_set)})"
     )
 
-    crop_metadata = [m for m in crop_metadata if m["crop_stem"] in kept_stems]
-    if not crop_metadata:
-        print("[ENH] Warning: no patches remain after GCN filtering — "
-              "falling back to full-frame translation.")
-        from src.baseline_model import translate_test_video
-        return translate_test_video(cut_dir, exp_name, test_path, save_dir, device, output_name)
+    filtered_metadata = [m for m in crop_metadata if m["crop_stem"] in kept_stems]
+    if not filtered_metadata:
+        print(f"[ENH] Warning: GCN filtered all {len(crop_metadata)} patches to excluded classes "
+              f"({sorted(exclude_set)}). Compositing all detected patches without GCN filter.")
+    else:
+        crop_metadata = filtered_metadata
 
     # --- Step 4: Translate all kept crops in one batched CUT call ---------
     # _translate_crops runs CUT over all .jpg in patch_dir; _composite_frames
@@ -257,6 +257,15 @@ def translate_test_video_enhanced(
         os.path.splitext(os.path.basename(p))[0]: p
         for p in translated_paths
     }
+
+    meta_stems    = {m["crop_stem"] for m in crop_metadata}
+    covered       = meta_stems & translated_map.keys()
+    print(f"[ENH] translated_map: {len(translated_map)} entries, "
+          f"{len(covered)}/{len(meta_stems)} crop stems matched")
+    if not covered:
+        print("[ENH] WARNING: no crop stems matched translated_map — "
+              "stale crops_translated/ cache or CUT naming mismatch. "
+              "Delete output/q2_2/ and rerun.")
 
     # --- Step 5: Composite translated crops back onto original frames -----
     composited_dir = os.path.join(save_dir, "composited_frames")

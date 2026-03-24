@@ -172,7 +172,7 @@ def run_cut_inference(
     device: str,
 ) -> list[str]:
     """
-    Run CUT's test.py and return sorted paths to the translated fake_B images.
+    Run CUT's test.py and return sorted paths to the translated fake images.
 
     Each call gets its own isolated results directory (passed as
     --results_dir), so multiple calls with the same exp_name never overwrite
@@ -187,9 +187,15 @@ def run_cut_inference(
         device      : "cuda" | "cpu".
 
     Returns:
-        Sorted list of .jpg paths in results_dir/fake/.
+        Sorted list of .jpg paths in results_dir/fake_M/ (AtoB) or results_dir/fake_G/ (BtoA).
     """
-    fake_dir = os.path.join(results_dir, "fake")
+    # Semantic output label: AtoB = game→movie → fake_M, BtoA = movie→game → fake_G.
+    # Note: CUT's model always internally names outputs "fake_B" because it
+    # hardcodes visual_names = ['real_A', 'fake_B', 'real_B']. When direction=BtoA,
+    # the dataloader swaps domains so the translated output (fake_G semantically)
+    # is still written to a fake_B subdir. We copy it to the correct semantic name.
+    out_label = "fake_M" if direction == "AtoB" else "fake_G"
+    fake_dir = os.path.join(results_dir, out_label)
     os.makedirs(fake_dir, exist_ok=True)
 
     existing = sorted(glob.glob(os.path.join(fake_dir, "*.jpg")))
@@ -222,8 +228,9 @@ def run_cut_inference(
     subprocess.run(cmd, check=True, cwd=cut_dir)
 
     raw_dir = os.path.join(cut_results_root, exp_name, f"{phase}_latest", "images")
-    fake_tag = "fake_B" if direction == "AtoB" else "fake_A"
-    subdir = os.path.join(raw_dir, fake_tag)
+    # CUT always writes translated images to fake_B regardless of --direction.
+    cut_fake_tag = "fake_B"
+    subdir = os.path.join(raw_dir, cut_fake_tag)
 
     if os.path.isdir(subdir):
         sources = sorted({
@@ -233,14 +240,14 @@ def run_cut_inference(
     else:
         sources = sorted({
             p for ext in ("jpg", "png")
-            for p in glob.glob(os.path.join(raw_dir, f"*{fake_tag}*.{ext}"))
+            for p in glob.glob(os.path.join(raw_dir, f"*{cut_fake_tag}*.{ext}"))
         })
 
     if not sources:
         print(f"[CUT] WARNING: no fake outputs in {raw_dir} (direction={direction})")
 
     for p in sources:
-        stem = os.path.splitext(os.path.basename(p))[0].replace(f"_{fake_tag}", "")
+        stem = os.path.splitext(os.path.basename(p))[0].replace(f"_{cut_fake_tag}", "")
         dst  = os.path.join(fake_dir, stem + ".jpg")
         if not os.path.exists(dst):
             img = cv2.imread(p)
@@ -251,7 +258,7 @@ def run_cut_inference(
 
     result = sorted(glob.glob(os.path.join(fake_dir, "*.jpg")))
     if not result:
-        print(f"[CUT] WARNING: fake_dir empty after inference: {fake_dir}")
+        print(f"[CUT] WARNING: {fake_dir} empty after inference")
     return result
 
 
