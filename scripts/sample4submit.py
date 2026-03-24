@@ -21,10 +21,10 @@ N_11 = 50
 DIR_11 = "output/extracted_humans/20260324-185427"
 
 N_12 = 20  # per class (5 classes)
-DIR_12 = "output/gcn_results/20260324-184945"
+DIR_12 = "output/gcn_results/20260324-195802_manual"
 
 N_13 = 50
-DIR_13 = "output/train_select/20260324-160718"
+DIR_13 = "output/train_select/20260324-195936"
 
 SEED = 42
 
@@ -76,7 +76,7 @@ def main() -> None:
     gcn_dir = abs_path(DIR_12)
     class_dirs = sorted(
         d for d in os.listdir(gcn_dir)
-        if os.path.isdir(os.path.join(gcn_dir, d))
+        if os.path.isdir(os.path.join(gcn_dir, d)) and d != "no_pose"
     )
     total_12 = 0
     for cls in class_dirs:
