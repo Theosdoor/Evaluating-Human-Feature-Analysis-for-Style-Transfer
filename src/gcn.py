@@ -648,16 +648,18 @@ def save_gcn_results(
     Returns:
         summary dict { class_string: count }
     """
-    for cls in CLASSES:
+    all_result_classes = list(CLASSES) + ["no_pose"]
+    for cls in all_result_classes:
         os.makedirs(os.path.join(save_dir, cls), exist_ok=True)
 
-    summary = {cls: 0 for cls in CLASSES}
+    summary = {cls: 0 for cls in all_result_classes}
 
     for fname, cls in tqdm(results.items(), desc="Saving GCN results", unit="patch"):
         src_path = os.path.join(src_dir, fname)
+        os.makedirs(os.path.join(save_dir, cls), exist_ok=True)  # handles any unexpected cls
         if os.path.exists(src_path):
             shutil.copy(src_path, os.path.join(save_dir, cls, fname))
-        summary[cls] += 1
+        summary[cls] = summary.get(cls, 0) + 1
 
     total = sum(summary.values())
     summary_lines = [

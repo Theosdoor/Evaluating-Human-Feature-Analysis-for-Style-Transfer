@@ -126,7 +126,7 @@ RELOAD_EXTRACT = "20260314-195748"
 #
 # Set RELOAD_GCN to skip re-running inference on already-classified patches.
 RELOAD_GCN = None
-RELOAD_GCN = "20260324-112637"
+RELOAD_GCN = "20260324-151423"
 
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None
