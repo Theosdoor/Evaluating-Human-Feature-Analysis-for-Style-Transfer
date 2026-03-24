@@ -160,9 +160,9 @@ n2save = 4000
 # extraction params
 detection_b_size = 32
 yolo_interval=10
-scene_change_threshold=8.0
-blur_threshold_film=40.0
-blur_threshold_game=100.0
+scene_change_threshold=8 
+blur_threshold_film=40
+blur_threshold_game=40
 
 selected_detections = []
 

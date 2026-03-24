@@ -129,8 +129,8 @@ Fine-tunes CUT on selected patches. Composites translated patches back onto sour
 | 1.2 rule-based classification | `output/init_classifications/<SAVE_NAME>-<N>/` (via `get_next_reclassify_dir`) |
 | 1.2 manual annotations | `output/manual_annotated/<SAVE_NAME>/annotations.json` |
 | 1.2 GCN training | `output/gcn_results/<SAVE_NAME>/` |
-| 2.1 full-frame model | `output/q2_1/` (fixed; one run per notebook session) |
-| 2.2 enhanced model | `output/q2_2/` (fixed; one run per notebook session) |
+| 2.1 full-frame model | `output/q2_1/<SAVE_NAME>/` |
+| 2.2 enhanced model | `output/q2_2/<SAVE_NAME>/` |
 
 - **Timestamped runs:** `YYYYMMDD-HHMMSS` prefix (e.g. `20260314-195748`)
 - **Reclassification reruns:** use `get_next_reclassify_dir` from `src/utils.py`; never reimplement the suffix-increment logic elsewhere

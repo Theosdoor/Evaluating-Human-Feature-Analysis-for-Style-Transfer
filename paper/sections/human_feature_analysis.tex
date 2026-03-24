@@ -10,3 +10,5 @@
 % From the images created in 1.1, propose and develop amethod that selects the most useful images for human style transfer training (in thenext stage). You are encouraged to present and utilise your own observations andinsights here. You may adapt algorithms in past questions, but do note that simplydoing so may not generate good enough outcomes. Randomly sample and submit50 image files. Explain and justify your method. Max words: 100. (15%)
 
 % dino is 
+% The claim that "diverse training data improves CUT" is intuitive but not proven for this domain. You need an empirical justification — e.g., show that without deduplication you have X near-duplicate pairs, and state that repetitive data risks overfitting the generator to specific shot compositions.
+% DINOv2 was trained on natural images, not game footage — the embedding space may not perfectly separate game-domain variations. Worth a brief caveat.
