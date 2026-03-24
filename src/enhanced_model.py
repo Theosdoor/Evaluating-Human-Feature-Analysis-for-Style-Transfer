@@ -141,7 +141,6 @@ def translate_test_video_enhanced(
     yolo_model,
     pose_model_path: str,
     gcn_save_path: str,
-    gcn_hidden: int = 128,
     output_name: str = "enhanced_model.mp4",
     exclude_classes: list[str] | None = None,
     direction: str = "AtoB",
@@ -178,8 +177,7 @@ def translate_test_video_enhanced(
         yolo_model      : loaded ultralytics YOLO instance (reused from 1.1).
         pose_model_path : path to YOLO pose model weights (for GCN keypoints).
         gcn_save_path   : path to output/gcn_results/<run>/ containing
-                          gcn_model.pt (trained in 1.2).
-        gcn_hidden      : hidden dim of the GCN — must match training (default 128).
+                          gcn_model_<run>.pt (hidden dim inferred from checkpoint).
         output_name     : filename for the output mp4.
         exclude_classes : class names to skip during compositing.
                           Defaults to ['others'] if None.
@@ -237,7 +235,7 @@ def translate_test_video_enhanced(
         pose_model.to(device)
         keypoints_dict = extract_and_save_keypoints(pose_model, patch_dir, npz_path)
 
-    gcn_model = load_gcn_model(gcn_save_path, device, hidden=gcn_hidden)
+    gcn_model = load_gcn_model(gcn_save_path, device)
     if use_stgcn:
         from src.stgcn import run_stgcn_inference
         gcn_results = run_stgcn_inference(

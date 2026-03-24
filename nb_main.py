@@ -5,7 +5,6 @@
 import os
 import sys
 import subprocess
-import shutil
 
 # Add project root to path for imports
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -37,11 +36,6 @@ from src.feat_extract import (
     save_patches,
     save_extraction_summary,
 )
-from src.classification import (
-    reload_classification_results,
-    classify_directory,
-    save_classification_summary,
-)
 from src.baseline_model import (
     PRETRAINED_MODELS,
     ensure_pretrained_models,
@@ -54,13 +48,8 @@ from src.enhanced_model import (
     translate_test_video_enhanced,
     compute_bbox_fid,
 )
-from src.utils import get_next_reclassify_dir, finetune_cut
-from src.gcn import (
-    run_gcn_pipeline,
-    reload_gcn_results,
-    plot_annotation_ablation,
-    run_gcn_inference_pretrained,
-)
+from src.utils import finetune_cut
+from src.gcn import reload_gcn_results, run_gcn_inference_pretrained
 from src.data import select_with_dino_clustering
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
@@ -129,34 +118,21 @@ RUN_FULL_PIPELINE = False # True = run all stages ignoring reload flags. False =
 
 # -- 1.1 --
 RELOAD_EXTRACT = None
-RELOAD_EXTRACT = "20260314-195748"
+RELOAD_EXTRACT = "20260324-104659"
 
-# -- 1.2 rule-based --
-# Points to a run name under output/init_classifications/.
-# Set to None to run rule-based classification from scratch.
-RELOAD_INIT_CLS = None
-RELOAD_INIT_CLS = "20260314-195748-6"
-
-# -- 1.2b manual annotations --
-# Path to annotations.json from scripts/annotate.py.
-# Used as training labels for the GCN.
-RELOAD_ANNOTATIONS = None
-RELOAD_ANNOTATIONS = "20260314-195748-6"
-
-# -- 1.2c GCN --
-# "rule"   — train GCN on rule-based labels (RELOAD_INIT_CLS dir)
-# "manual" — train GCN on manual annotations (RELOAD_ANNOTATIONS)
-GCN_LABEL_SOURCE = "manual"
-
-# Set to a run name under output/gcn_results/ to skip GCN training+inference.
+# -- 1.2 GCN --
+# GCN training is a one-time offline step — run scripts/train_gcn.py to produce
+# (or refresh) checkpoints/gcn_model.pt, then commit the result.
+#
+# Set RELOAD_GCN to skip re-running inference on already-classified patches.
 RELOAD_GCN = None
 RELOAD_GCN = "20260320-162455"
-# Val accuracy per class for manual annotations:
-    # full_body_front           52/72  (72.2%)
-    # full_body_back            18/19  (94.7%)
-    # head_shoulder_front       49/75  (65.3%)
-    # head_shoulder_back        19/27  (70.4%)
-    # others                    5/51  (9.8%)
+# Val accuracy per class (manual annotations, 300 epochs, hidden=128):
+    # full_body_front       52/72  (72.2%)
+    # full_body_back        18/19  (94.7%)
+    # head_shoulder_front   49/75  (65.3%)
+    # head_shoulder_back    19/27  (70.4%)
+    # others                 5/51   (9.8%)
 
 # -- 1.3 --
 # RELOAD_TRAIN_SELECT = None
@@ -170,9 +146,8 @@ RUN_FINETUNE_22 = True
 RUN_TRANSLATE_VIDEO_22 = True
 
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
-reload_extract   = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
-reload_init_cls  = None if RUN_FULL_PIPELINE else RELOAD_INIT_CLS
-reload_gcn       = None if RUN_FULL_PIPELINE else RELOAD_GCN
+reload_extract = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
+reload_gcn     = None if RUN_FULL_PIPELINE else RELOAD_GCN
 
 # %% [markdown]
 # ## 1.1. Human Patch Extraction
@@ -231,129 +206,43 @@ else:
     save_extraction_summary(extract_save_path, detections, selected_detections)
 
 # %% [markdown]
-# ## 1.2 Classification
+# ## 1.2 Pose Classification (GCN)
+#
+# GCN training is an offline one-time step — it requires manually annotated labels
+# (run scripts/annotate.py, then scripts/train_gcn.py) and produces a committed
+# checkpoint at checkpoints/gcn_model.pt.
+#
+# Here we run inference only: load the pretrained checkpoint and classify all
+# extracted patches into the 5 pose classes.
+#
+# To retrain or run the rule-vs-manual ablation:
+#     python scripts/train_gcn.py --help
 
 # %%
-# initially do it based on rules applied to keypoints
-init_cls_base_dir = os.path.join(SAVE_DIR, "init_classifications")
-if reload_init_cls:
-    init_cls_save_path = os.path.join(init_cls_base_dir, reload_init_cls)
-else:
-    init_cls_save_path = get_next_reclassify_dir(init_cls_base_dir, os.path.basename(extract_save_path))
-
-classify_b_size = 32
-
-if reload_init_cls:
-    init_results, init_summary = reload_classification_results(init_cls_save_path)
-    print(f"[CLS] Reloaded rule-based classification from {init_cls_save_path} (total={sum(init_summary.values())})")
-else:
-    pose_model = YOLO(POSE_MODEL_PATH)
-    pose_model.to(DEVICE)
-
-    init_results, init_summary = classify_directory(
-        pose_model,
-        input_dir=extract_save_path,      # patches live here
-        output_dir=init_cls_save_path,
-        batch_size=classify_b_size,
-        copy_files=True,
-        save_debug_viz=False,
-        save_keypoints=True,              # writes _keypoints.npz to extract_save_path
-    )
-
-    save_classification_summary(init_cls_save_path, init_summary, extract_save_path)
-
-# %% [markdown]
-# Manual Annotation (optional — run scripts/annotate.py separately)
-#
-# Run annotate.py against init_cls_save_path to produce an annotations.json:
-#
-#     python3 scripts/annotate.py --cls-dir output/init_classifications/<run>
-#
-# Then set RELOAD_ANNOTATIONS above to the resulting annotations.json path.
-
-
-# %%
-# GCN Classification
-# Committed checkpoint produced from manual annotations (one-time human effort).
-# Used by RUN_FULL_PIPELINE=True to run inference on fresh patches without retraining.
-GCN_PRETRAINED_CKPT = os.path.join(PROJECT_ROOT, "checkpoints", "gcn_model.pt")
-GCN_HIDDEN = 128
+import glob as _glob
 
 gcn_save_path = os.path.join(SAVE_DIR, "gcn_results", reload_gcn or SAVE_NAME)
 
-gcn_params = dict(
-    all_patches_dir = extract_save_path,
-    pose_model_path = POSE_MODEL_PATH,
-    device          = DEVICE,
-    lr              = 3e-4,
-    epochs          = 300,
-    hidden          = GCN_HIDDEN,
-    dropout         = 0.1,
-    batch_size      = 256,
-    # exclude_classes = ['others'],  # including 'others' is actually really important for generalising!!
-    save_plots      = True,
-)
+# Locate latest committed GCN checkpoint (checkpoints/gcn_model_<run>.pt).
+# Override by setting GCN_PRETRAINED_CKPT to a specific path.
+_ckpt_candidates = sorted(_glob.glob(os.path.join(PROJECT_ROOT, "checkpoints", "gcn_model_*.pt")))
+GCN_PRETRAINED_CKPT = _ckpt_candidates[-1] if _ckpt_candidates else None
 
 if reload_gcn:
     results, summary = reload_gcn_results(gcn_save_path)
     print(f"[GCN] Reloaded GCN results from {gcn_save_path} (total={sum(summary.values())})")
-elif os.path.exists(GCN_PRETRAINED_CKPT):
-    # Full-pipeline run: load committed checkpoint, run inference on freshly extracted patches.
-    # Skips retraining (which requires manual annotations tied to a specific extraction run).
+elif GCN_PRETRAINED_CKPT:
     results, summary = run_gcn_inference_pretrained(
         ckpt_path         = GCN_PRETRAINED_CKPT,
         extract_save_path = extract_save_path,
         gcn_save_path     = gcn_save_path,
         pose_model_path   = POSE_MODEL_PATH,
         device            = DEVICE,
-        hidden            = GCN_HIDDEN,
     )
 else:
-    if GCN_LABEL_SOURCE == "manual":
-        if not RELOAD_ANNOTATIONS:
-            raise ValueError("GCN_LABEL_SOURCE='manual' but RELOAD_ANNOTATIONS is not set.")
-        if "/" in RELOAD_ANNOTATIONS:
-            ann_path = RELOAD_ANNOTATIONS if os.path.isabs(RELOAD_ANNOTATIONS) else os.path.join(PROJECT_ROOT, RELOAD_ANNOTATIONS)
-        else:
-            ann_path = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS, "annotations.json")
-        labelled_dir = os.path.dirname(ann_path)
-    elif GCN_LABEL_SOURCE == "rule":
-        labelled_dir = init_cls_save_path
-    else:
-        raise ValueError(f"Unknown GCN_LABEL_SOURCE '{GCN_LABEL_SOURCE}'. Use 'manual' or 'rule'.")
-
-    results, summary, gcn_per_class_val_acc = run_gcn_pipeline(
-        labelled_dir = labelled_dir,
-        cls_source   = GCN_LABEL_SOURCE,
-        save_dir     = gcn_save_path,
-        **gcn_params,  # type: ignore[arg-type]
-    )
-
-# %%
-# GCN Annotation Ablation (rule-based vs manual labels)
-# Run both label sources and compare per-class val accuracy.
-# Requires both RELOAD_INIT_CLS (rule labels) and RELOAD_ANNOTATIONS (manual labels).
-RUN_GCN_ABLATION = False
-
-if RUN_GCN_ABLATION:
-    _rule_dir   = os.path.join(SAVE_DIR, "init_classifications", RELOAD_INIT_CLS)
-    _manual_dir = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS)
-    _, _, _rule_acc = run_gcn_pipeline(
-        labelled_dir = _rule_dir,
-        cls_source   = "rule",
-        save_dir     = os.path.join(SAVE_DIR, "gcn_results", SAVE_NAME + "_ablation_rule"),
-        **gcn_params,  # type: ignore[arg-type]
-    )
-    _, _, _manual_acc = run_gcn_pipeline(
-        labelled_dir = _manual_dir,
-        cls_source   = "manual",
-        save_dir     = os.path.join(SAVE_DIR, "gcn_results", SAVE_NAME + "_ablation_manual"),
-        **gcn_params,  # type: ignore[arg-type]
-    )
-    plot_annotation_ablation(
-        rule_per_class_val_acc   = _rule_acc,
-        manual_per_class_val_acc = _manual_acc,
-        save_path = os.path.join(FIGURES_DIR, "gcn_annotation_ablation.png"),
+    raise FileNotFoundError(
+        f"No pretrained GCN checkpoint found in {PROJECT_ROOT}/checkpoints/.\n"
+        "Train one with:  python scripts/train_gcn.py --help"
     )
 
 # %% [markdown]
@@ -457,7 +346,6 @@ if RUN_FINETUNE_22:
             yolo_model=yolo_model,
             pose_model_path=POSE_MODEL_PATH,
             gcn_save_path=gcn_save_path,
-            gcn_hidden=128,
             exclude_classes=["others"],
             blend_alpha=0.3,
             blur_threshold=10.0,

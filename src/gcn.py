@@ -835,9 +835,10 @@ def run_gcn_pipeline(
         plot_dir       = save_dir,
     )
 
-    # Save model checkpoint
-    ckpt_path = os.path.join(save_dir, "gcn_model.pt")
-    torch.save(model.state_dict(), ckpt_path)
+    # Save model checkpoint (named after the run dir so it's traceable)
+    save_name = os.path.basename(save_dir)
+    ckpt_path = os.path.join(save_dir, f"gcn_model_{save_name}.pt")
+    torch.save({"state_dict": model.state_dict(), "hidden": hidden}, ckpt_path)
     print(f"[GCN] Model checkpoint saved → {ckpt_path}")
 
     # --- 5. Inference on all patches ---
@@ -853,26 +854,38 @@ def run_gcn_pipeline(
 # Ablation plot
 # ---------------------------------------------------------------------------
 
-def load_gcn_model(gcn_save_path: str, device: str, hidden: int = 128) -> PoseGCN:
+def load_gcn_model(gcn_save_path: str, device: str) -> PoseGCN:
     """
     Load a trained PoseGCN checkpoint from a gcn_results directory.
 
+    Searches for gcn_model_*.pt inside gcn_save_path. The hidden dimension is
+    inferred from the checkpoint dict (new format); legacy bare state-dicts fall
+    back to hidden=128.
+
     Args:
-        gcn_save_path : path to output/gcn_results/<run>/ containing gcn_model.pt.
+        gcn_save_path : directory containing a gcn_model_<run>.pt checkpoint.
         device        : "cuda" | "mps" | "cpu".
-        hidden        : must match the hidden dimension used during training (default 128).
 
     Returns:
         PoseGCN in eval mode on the given device.
     """
-    ckpt_path = os.path.join(gcn_save_path, "gcn_model.pt")
-    if not os.path.exists(ckpt_path):
-        raise FileNotFoundError(f"GCN checkpoint not found: {ckpt_path}")
+    import glob as _glob
+    matches = sorted(_glob.glob(os.path.join(gcn_save_path, "gcn_model_*.pt")))
+    if not matches:
+        raise FileNotFoundError(f"No gcn_model_*.pt checkpoint found in {gcn_save_path}")
+    ckpt_path = matches[0]
+    payload = torch.load(ckpt_path, map_location=device)
+    if isinstance(payload, dict) and "state_dict" in payload:
+        hidden = payload["hidden"]
+        state_dict = payload["state_dict"]
+    else:
+        hidden = 128  # legacy bare state-dict
+        state_dict = payload
     model = PoseGCN(hidden=hidden)
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
-    print(f"[GCN] Loaded checkpoint from {ckpt_path}")
+    print(f"[GCN] Loaded checkpoint from {ckpt_path} (hidden={hidden})")
     return model
 
 
@@ -882,23 +895,20 @@ def run_gcn_inference_pretrained(
     gcn_save_path: str,
     pose_model_path: str,
     device: str,
-    hidden: int = 128,
 ) -> tuple[dict, dict]:
     """
     Run GCN inference using a committed pretrained checkpoint on freshly
     extracted patches, without retraining.
 
-    Copies ckpt_path into gcn_save_path, loads/reuses cached keypoints from
-    extract_save_path/_keypoints.npz (running pose inference if absent), then
-    classifies every patch.
+    Copies ckpt_path into gcn_save_path (preserving filename), then classifies
+    every patch. The hidden dimension is inferred from the checkpoint.
 
     Args:
-        ckpt_path         : committed .pt checkpoint (e.g. checkpoints/gcn_model.pt).
+        ckpt_path         : committed .pt checkpoint (e.g. checkpoints/gcn_model_<run>.pt).
         extract_save_path : extracted_humans/<run>/ directory.
         gcn_save_path     : output/gcn_results/<run>/ directory to write into.
         pose_model_path   : YOLO pose weights used to extract keypoints if not cached.
         device            : "cuda" | "mps" | "cpu".
-        hidden            : GCN hidden dim (must match training, default 128).
 
     Returns:
         (results, summary) — same structure as run_gcn_pipeline.
@@ -908,7 +918,7 @@ def run_gcn_inference_pretrained(
     from ultralytics import YOLO as _YOLO
 
     os.makedirs(gcn_save_path, exist_ok=True)
-    _shutil.copy(ckpt_path, os.path.join(gcn_save_path, "gcn_model.pt"))
+    _shutil.copy(ckpt_path, os.path.join(gcn_save_path, os.path.basename(ckpt_path)))
 
     npz_path = os.path.join(extract_save_path, "_keypoints.npz")
     if os.path.exists(npz_path):
@@ -919,7 +929,7 @@ def run_gcn_inference_pretrained(
         _pose_model.to(device)
         keypoints_dict = extract_and_save_keypoints(_pose_model, extract_save_path, npz_path)
 
-    gcn_model = load_gcn_model(gcn_save_path, device, hidden=hidden)
+    gcn_model = load_gcn_model(gcn_save_path, device)
     all_fnames = sorted(
         os.path.basename(p)
         for p in _glob.glob(os.path.join(extract_save_path, "*.jpg"))

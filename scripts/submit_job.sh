@@ -17,4 +17,8 @@ python3 -c "import torch; print(f'CUDA Available: {torch.cuda.is_available()}');
 echo "------------------------------------------------------"
 
 # Run the experiments
+# python scripts/train_gcn.py \
+#     --extract-dir output/extracted_humans/20260314-195748 \
+#     --label-source manual \
+#     --annotations output/manual_annotated/20260314-195748-6
 python3 nb_main.py
