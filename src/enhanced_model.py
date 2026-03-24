@@ -146,15 +146,21 @@ def translate_test_video_enhanced(
     blend_alpha: float = 0.3,
     blur_threshold: float = 10.0,
     patch_size: int = 256,
+    use_stgcn: bool = True,
+    stgcn_window: int = 5,
 ) -> str:
     """
     Apply patch-level style transfer to human regions in the test video,
-    using the 1.2 GCN to filter which patches receive translation.
+    using the 1.2 GCN (or ST-GCN when use_stgcn=True) to filter which
+    patches receive translation.
 
     For each test frame:
       1. Detect human bounding boxes with YOLO (every frame, no scene-change
          skip, lenient blur threshold).
       2. Classify patches with the trained GCN; drop excluded classes.
+         When use_stgcn=True, a T-frame spatio-temporal window (Yan et al.
+         2018) is used instead of per-frame classification — the same PoseGCN
+         weights operate on 17*T-node graphs, adding temporal consistency.
       3. Translate all kept crops in one batched CUT call.
       4. Resize translated crop back to original bbox dimensions.
       5. Composite onto the original frame (background untouched).
@@ -181,6 +187,10 @@ def translate_test_video_enhanced(
         blur_threshold  : Laplacian variance floor for patch acceptance.
                           Lower = more lenient. Applies to both film and game.
         patch_size      : size to resize crops to before CUT inference.
+        use_stgcn       : if True (default), use spatio-temporal GCN classification
+                          (ST-GCN, Yan et al. 2018) over stgcn_window consecutive
+                          frames per tracked person instead of per-frame GCN.
+        stgcn_window    : temporal window size T when use_stgcn=True (default 5).
 
     Returns:
         Path to the output video.
@@ -226,8 +236,15 @@ def translate_test_video_enhanced(
         keypoints_dict = extract_and_save_keypoints(pose_model, patch_dir, npz_path)
 
     gcn_model = load_gcn_model(gcn_save_path, device, hidden=gcn_hidden)
-    all_fnames = sorted(os.path.basename(p) for p in glob.glob(os.path.join(patch_dir, "*.jpg")))
-    gcn_results = gcn_run_inference(gcn_model, all_fnames, keypoints_dict, device)
+    if use_stgcn:
+        from src.stgcn import run_stgcn_inference
+        gcn_results = run_stgcn_inference(
+            gcn_model, crop_metadata, keypoints_dict, device, T=stgcn_window,
+        )
+        print(f"[ENH] ST-GCN inference (T={stgcn_window}) on {len(gcn_results)} patches")
+    else:
+        all_fnames = sorted(os.path.basename(p) for p in glob.glob(os.path.join(patch_dir, "*.jpg")))
+        gcn_results = gcn_run_inference(gcn_model, all_fnames, keypoints_dict, device)
 
     exclude_set = set(exclude_classes if exclude_classes is not None else ["others"])
     kept_stems = {
