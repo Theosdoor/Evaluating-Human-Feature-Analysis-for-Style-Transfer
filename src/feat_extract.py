@@ -17,7 +17,6 @@ Human patch extraction pipeline.
 import os
 import time
 import cv2
-import numpy as np
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
@@ -75,12 +74,6 @@ def _process_batch(model, frame_batch, frame_meta, img_area, blur_thresh, video_
             area = (x2 - x1) * (y2 - y1)
             relative_area = area / img_area
 
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
-            dist = np.sqrt((center_x - frame_w / 2) ** 2 + (center_y - frame_h / 2) ** 2)
-            max_dist = np.sqrt((frame_w / 2) ** 2 + (frame_h / 2) ** 2)
-            centering = 1.0 - dist / max_dist
-
             detections.append({
                 'video_path': video_path,
                 'frame_num': frame_count,
@@ -90,7 +83,6 @@ def _process_batch(model, frame_batch, frame_meta, img_area, blur_thresh, video_
                 'relative_area': relative_area,
                 'blur_score': blur,
                 'blur_thresh': blur_thresh,
-                'centering': centering,
                 'patch': patch.copy(),  # cached crop — avoids second video pass
             })
 
@@ -161,11 +153,13 @@ def extract_humans_from_video(
             # We lose diff-check continuity for those frames but avoid decode cost.
             skip_ahead = max(0, yolo_interval - frames_since_yolo - 2)
             if skip_ahead > 0 and prev_gray is not None:
+                grabbed = 0
                 for _ in range(skip_ahead):
                     if not cap.grab():
                         break
-                frame_count += skip_ahead
-                pbar.update(skip_ahead)
+                    grabbed += 1
+                frame_count += grabbed
+                pbar.update(grabbed)
 
             ret, frame = cap.read()
             if not ret:

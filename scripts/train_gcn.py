@@ -14,7 +14,7 @@ Manual-annotation labels (recommended):
         --label-source manual \
         --annotations  output/manual_annotated/20260314-195748-6 \
         --pose-model   models/yolo26m-pose.pt \
-        --output-ckpt  checkpoints/gcn_model.pt
+        --output-ckpt  checkpoints/gcn_MANUAL_model_<timestamp>.pt
 
 Rule-based labels (no manual effort; lower accuracy):
 
@@ -23,7 +23,7 @@ Rule-based labels (no manual effort; lower accuracy):
         --label-source rule \
         --init-cls-dir output/init_classifications/20260314-195748-6 \
         --pose-model   models/yolo26m-pose.pt \
-        --output-ckpt  checkpoints/gcn_model.pt
+        --output-ckpt  checkpoints/gcn_RULE_model_<timestamp>.pt
 
   Omit --init-cls-dir to run rule-based classification from scratch
   (requires --pose-model).
@@ -235,7 +235,7 @@ def main() -> None:
         extract_dir     = args.extract_dir,
         pose_model_path = args.pose_model,
         device          = device,
-        save_name       = save_name,
+        save_name       = f"{save_name}_{args.label_source}",
         hidden          = args.hidden,
         lr              = args.lr,
         epochs          = args.epochs,
