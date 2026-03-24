@@ -475,4 +475,11 @@ if RUN_FINETUNE_22:
             blur_threshold=10.0,
         )
         print(f"[2.2] Enhanced video → {enhanced_video}")
+
+        bbox_fid_22 = compute_bbox_fid(
+            real_patch_dir=os.path.join(q2_2_dir, "patch_dataroot", "trainB"),
+            translated_crop_dir=os.path.join(q2_2_dir, "crops_translated"),
+            device=DEVICE,
+        )
+        print(f"[2.2] Bbox FID: {bbox_fid_22:.4f}")
  

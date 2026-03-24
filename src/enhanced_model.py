@@ -49,6 +49,8 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
+from cleanfid import fid as cleanfid
+
 from src.utils import extract_video_frames, write_video, run_cut_inference, finetune_cut
 
 
@@ -293,6 +295,36 @@ def translate_test_video_enhanced(
     )
 
     return write_video(composited_paths, os.path.join(save_dir, output_name), fps)
+
+
+# ---------------------------------------------------------------------------
+# Bounding-box FID — Q2.2
+# ---------------------------------------------------------------------------
+
+def compute_bbox_fid(
+    real_patch_dir: str,
+    translated_crop_dir: str,
+    device: str,
+    num_workers: int = 2,
+) -> float:
+    """
+    Compute FID over human patches only (not full frames).
+
+    real_patch_dir      : directory of real movie-domain patches
+                          (use patch_dataroot/trainB staged during fine-tuning).
+    translated_crop_dir : directory containing a 'fake/' sub-folder of
+                          translated game patches (output of _translate_crops).
+    """
+    fake_dir = os.path.join(translated_crop_dir, "fake")
+    if not os.path.isdir(fake_dir):
+        fake_dir = translated_crop_dir
+    print("[ENH] Computing bbox FID…")
+    score = cleanfid.compute_fid(
+        real_patch_dir, fake_dir,
+        device=device, num_workers=num_workers, verbose=False,
+    )
+    print(f"[ENH] Bbox FID: {score:.4f}")
+    return score
 
 
 # ---------------------------------------------------------------------------
