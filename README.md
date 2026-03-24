@@ -1,5 +1,28 @@
 # ACV Cswk
 
+## Getting Started
+
+```bash
+# 1. Clone the repo
+git clone <repo-url> && cd ACV_cswk
+
+# 2. Download external dependencies (CUT fork + DINOv2 checkpoint)
+bash scripts/install_externals.sh
+
+# 3. Install Python dependencies (requires uv)
+uv sync
+
+# 4. Set up WandB
+cp .env.example .env   # then fill in WANDB_API_KEY / WANDB_PROJECT
+
+# 5. Run the pipeline
+source .venv/bin/activate
+python3 nb_main.py
+```
+
+> **Note:** `install_externals.sh` must run **before** `uv sync` — it clones the CUT
+> fork into `external/`, which uv treats as a workspace member.
+
 deps:
 - pretrained cut model
 - pretrained dino model - https://github.com/facebookresearch/dinov2/blob/main/README.md
@@ -22,6 +45,3 @@ deps:
 - Can use others' code but have to do novel adaptiation; bad results but high orginality >> good results with no originality
 - can use external datasets / pretrained models if you want - provided you cite them!
 
-## Links
-- 1st claude chat - https://claude.ai/chat/04bd8392-d930-4c2b-9eb0-013b1368697e
-- pytorch cyclegan (orig authors) - https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix?tab=readme-ov-file

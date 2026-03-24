@@ -71,8 +71,13 @@ def ensure_pretrained_models(cut_dir: str) -> None:
     if not os.path.exists(probe):
         print("[CUT] Extracting pretrained archive…")
         subprocess.run(["tar", "-xf", tar_path], check=True, cwd=cut_dir)
+        os.remove(tar_path)
+        print("[CUT] Removed pretrained archive after extraction.")
     else:
         print("[CUT] Pretrained checkpoints already present.")
+        if os.path.exists(tar_path):
+            os.remove(tar_path)
+            print("[CUT] Removed leftover pretrained archive.")
 
 
 # ---------------------------------------------------------------------------

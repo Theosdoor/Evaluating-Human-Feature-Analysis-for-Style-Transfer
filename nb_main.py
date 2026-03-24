@@ -1,8 +1,5 @@
 # %%
 # ACV CSWK 2026 - Main Notebook
-# Must be in root directory, and submitted as .ipynb file.
-# Must replicate (within reason), the multimedia files as requested in `cswk_notes/cswk_brief.txt`.
-# AGENTS: keep this script clean as much as possible. Add to src or create a new script in scripts/ if necessary.
 
 # %%
 import os
@@ -38,24 +35,8 @@ from ultralytics import YOLO # https://github.com/ultralytics/ultralytics
 
 from src.feat_extract import *
 from src.classification import *
-from src.baseline_model import (
-    ensure_pretrained_models,
-    build_frame_dataset,
-    finetune_cut_fullframe,
-    run_inference,
-    make_inference_dataroot,
-    translate_test_video,
-    compute_metrics,
-    save_comparison_grid,
-    save_umap,
-    evaluate_translation,
-    PRETRAINED_MODELS,
-)
-from src.enhanced_model import (
-    finetune_cut_patches,
-    translate_test_video_enhanced,
-)
-
+from src.baseline_model import *
+from src.enhanced_model import *
 from src.utils import *
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
@@ -89,6 +70,16 @@ FIGURES_DIR = os.path.join(PROJECT_ROOT, "figures")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Using device: {DEVICE}")
+
+# %%
+# Model choices
+
+# 1.1 extract model
+EXTRACT_MODEL = "yolov8m"
+POSE_MODEL    = "yolo26m-pose"
+EXTRACT_MODEL_PATH = os.path.join(PROJECT_ROOT, f"models/{EXTRACT_MODEL}.pt")
+POSE_MODEL_PATH    = os.path.join(PROJECT_ROOT, f"models/{POSE_MODEL}.pt")
+
 
 # Pick whichever pretrained model you want to evaluate in 2.1 and 2.2
 PRETRAINED_MODEL = "horse2zebra_cut_pretrained"
@@ -173,26 +164,25 @@ scene_change_threshold=8.0
 blur_threshold_film=40.0
 blur_threshold_game=100.0
 
-detections = []
 selected_detections = []
 
 if reload_extract:
     selected_detections = reload_extracted_patches(extract_save_path, [d["path"] for d in TRAIN_DATA])
     print(f"[EXTRACT] Reloaded extracted patches from {extract_save_path} ({len(selected_detections)} patches)")
 else:
-    model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolov8m.pt'))
+    model = YOLO(EXTRACT_MODEL_PATH)
     model.to(DEVICE)
 
     domain_budget = n2save // 2
-    targets = []
-    movie_durations = [d["duration"] for d in TRAIN_DATA if d["domain"] == 'movie']
-    movie_total = sum(movie_durations)
-    for data in TRAIN_DATA:
-        if data["domain"] == 'game':
-            targets.append(domain_budget)
-        else:
-            targets.append(int(domain_budget * data["duration"] / movie_total))
+    movie_total = sum(d["duration"] for d in TRAIN_DATA if d["domain"] == "movie")
+    targets = [
+        domain_budget if d["domain"] == "game"
+        else int(domain_budget * d["duration"] / movie_total)
+        for d in TRAIN_DATA
+    ]
     targets[-1] += n2save - sum(targets)
+
+    detections = []
 
     for data, target in tqdm(zip(TRAIN_DATA, targets), desc="Processing training videos", unit="video", total=len(TRAIN_DATA)):
         video_dets = extract_humans_from_video(model, data["path"],
@@ -233,7 +223,7 @@ if reload_init_cls:
     init_results, init_summary = reload_classification_results(init_cls_save_path)
     print(f"[CLS] Reloaded rule-based classification from {init_cls_save_path} (total={sum(init_summary.values())})")
 else:
-    pose_model = YOLO(os.path.join(PROJECT_ROOT, 'models/yolo26m-pose.pt'))
+    pose_model = YOLO(POSE_MODEL_PATH)
     pose_model.to(DEVICE)
 
     init_results, init_summary = classify_directory(
@@ -275,12 +265,11 @@ else:
 # GCN Classification
 from src.gcn import run_gcn_pipeline, reload_gcn_results, plot_annotation_ablation
 
-gcn_run_name  = reload_gcn if reload_gcn else SAVE_NAME
-gcn_save_path = os.path.join(SAVE_DIR, "gcn_results", gcn_run_name)
+gcn_save_path = os.path.join(SAVE_DIR, "gcn_results", reload_gcn or SAVE_NAME)
 
 gcn_params = dict(
     all_patches_dir = extract_save_path,
-    pose_model_path = os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
+    pose_model_path = POSE_MODEL_PATH,
     device          = DEVICE,
     lr              = 3e-4,
     epochs          = 300,
@@ -288,7 +277,7 @@ gcn_params = dict(
     dropout         = 0.1,
     batch_size      = 256,
     # exclude_classes = ['others'],  # including 'others' is actually really important for generalising!!
-    save_plots      = False,
+    save_plots      = True,
 )
 
 if reload_gcn:
@@ -298,12 +287,8 @@ else:
     if GCN_LABEL_SOURCE == "manual":
         if not RELOAD_ANNOTATIONS:
             raise ValueError("GCN_LABEL_SOURCE='manual' but RELOAD_ANNOTATIONS is not set.")
-        if os.sep in RELOAD_ANNOTATIONS or "/" in RELOAD_ANNOTATIONS:
-            ann_path = (
-                os.path.join(PROJECT_ROOT, RELOAD_ANNOTATIONS)
-                if not os.path.isabs(RELOAD_ANNOTATIONS)
-                else RELOAD_ANNOTATIONS
-            )
+        if "/" in RELOAD_ANNOTATIONS:
+            ann_path = RELOAD_ANNOTATIONS if os.path.isabs(RELOAD_ANNOTATIONS) else os.path.join(PROJECT_ROOT, RELOAD_ANNOTATIONS)
         else:
             ann_path = os.path.join(SAVE_DIR, "manual_annotated", RELOAD_ANNOTATIONS, "annotations.json")
         labelled_dir = os.path.dirname(ann_path)
@@ -316,10 +301,8 @@ else:
         labelled_dir = labelled_dir,
         cls_source   = GCN_LABEL_SOURCE,
         save_dir     = gcn_save_path,
-        **gcn_params,
+        **gcn_params,  # type: ignore[arg-type]
     )
-
-total_classified = sum(summary.values())
 
 # %%
 # GCN Annotation Ablation (rule-based vs manual labels)
@@ -334,13 +317,13 @@ if RUN_GCN_ABLATION:
         labelled_dir = _rule_dir,
         cls_source   = "rule",
         save_dir     = os.path.join(SAVE_DIR, "gcn_results", SAVE_NAME + "_ablation_rule"),
-        **gcn_params,
+        **gcn_params,  # type: ignore[arg-type]
     )
     _, _, _manual_acc = run_gcn_pipeline(
         labelled_dir = _manual_dir,
         cls_source   = "manual",
         save_dir     = os.path.join(SAVE_DIR, "gcn_results", SAVE_NAME + "_ablation_manual"),
-        **gcn_params,
+        **gcn_params,  # type: ignore[arg-type]
     )
     plot_annotation_ablation(
         rule_per_class_val_acc   = _rule_acc,
@@ -424,7 +407,7 @@ q2_2_dir = os.path.join(SAVE_DIR, "q2_2", SAVE_NAME)
 
 if RUN_FINETUNE_22:
     # YOLO for human detection in the test video (reuse same weights as 1.1)
-    yolo_model = YOLO(os.path.join(PROJECT_ROOT, "models/yolov8m.pt"))
+    yolo_model = YOLO(EXTRACT_MODEL_PATH)
     yolo_model.to(DEVICE)
 
     # Fine-tune from the same pretrained base as 2.1 — produces PATCH_MODEL checkpoint
@@ -443,7 +426,7 @@ if RUN_FINETUNE_22:
         enhanced_video = translate_test_video_enhanced(
             cut_dir, PATCH_MODEL, TEST_PATH, q2_2_dir, DEVICE,
             yolo_model=yolo_model,
-            pose_model_path=os.path.join(PROJECT_ROOT, "models/yolo26m-pose.pt"),
+            pose_model_path=POSE_MODEL_PATH,
             gcn_save_path=gcn_save_path,
             gcn_hidden=128,
             exclude_classes=["others"],
