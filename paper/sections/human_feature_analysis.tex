@@ -44,6 +44,16 @@ Candidate patches are scored by a weighted combination of detection confidence, 
 We classify patches using a 3-layer Graph Convolutional Network (GCN) \cite{kipf2017semisupervisedclassificationgraphconvolutional, Yan_Xiong_Lin_2018} on COCO \cite{lin2015microsoft} skeleton graphs with node features $(x, y, \text{confidence})$, and  confidence-weighted global pooling \cite{confidenceweightedpooling}.
 We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints for the skeletons.
 
+
+
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figs/annotation_tool.png}
+  \caption{Custom tool for manual annotation of extracted patches. In this screenshot, the user is prompted to accept a rule-based heuristic classification or reclassify.}
+  \label{fig:gcn_curves}
+\end{figure}
+
 \begin{figure}[h]
   \centering
   \includegraphics[width=\linewidth]{figs/gcn_training_curves.png}
