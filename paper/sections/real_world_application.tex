@@ -1,7 +1,212 @@
 \section{Real-world Application}\label{s:rwa}
 
-\subsection{Image Model Deployment}
-% Implement any unpaired image-to-image network (e.g.Cyclegan) for converting images between the game and movie domains. Downloada pretrained model or train from the beginning, apply it to your dataset of frames,and analyse its performance in both directions using appropriate metrics. Comparesuccessful and failure cases using at least 10 images for each and display them inthe report. Max words: 250. (20%)
+% ============================================================
+% WORD LIMITS: 2.1 = 250w, 2.2 = 250w
+% Excluded: equations, tables, figures, bibliography
+% ============================================================
 
-\subsection{Local (temporal) Enhancement}
-% Using your 2.1 model, transfer the style ofhumans in the video under the “Test” folder and submit the video. Critically evaluatethe result and suggest possible causes of failure. Design an improved model usinglocal methods in 1.1 to 1.3 or other advanced temporal approaches. Create andsubmit a new video and display at least 10 images of key frames to compare andshow the improvement. Max words: 250. (30%)
+% ============================================================
+\subsection{Image Model Deployment}
+% ============================================================
+% TASK: unpaired image-to-image translation on full frames (not patches).
+%       Evaluate in both directions with metrics.
+%       ≥10 success + ≥10 failure comparisons. 250 words.
+%
+% SUGGESTED STRUCTURE:
+%
+%   [Model] ~50 words
+%     "We adopt Contrastive Unpaired Translation (CUT)~\cite{park2020},
+%      which trains a generator \(G: A \to B\) using a PatchNCE loss
+%      that maximises mutual information between input and output patches,
+%      requiring no paired data.  We initialise from the publicly available
+%      horse2zebra pretrained weights~\cite{park2020} and fine-tune for
+%      5\,+\,3 epochs (constant LR then linear decay) on 500 full frames
+%      per domain extracted at the timestamps of 1.1 detections
+%      (GPU: NVIDIA Turing, $\sim$X minutes)."
+%     Hardware: NVIDIA GeForce RTX 2080 Ti (NCC HPC cluster).
+%     NOTE: fill in actual training time once you have it (check slurm logs).
+%
+%   [Evaluation] ~80 words
+%     Metrics: FID (distribution-level quality), KID (unbiased FID),
+%     LPIPS (perceptual patch similarity).
+%     Report both directions: game→movie (AtoB) and movie→game (BtoA).
+%     Example sentence:
+%     "Table~\ref{tab:metrics21} reports FID, KID, and LPIPS in both
+%      translation directions.  Game-to-movie translation achieves
+%      FID\,=\,X / KID\,=\,X, reflecting the larger domain gap from
+%      the constrained game palette to the varied cinematic style of
+%      movie footage.  Movie-to-game (BtoA) is easier, yielding
+%      FID\,=\,X, as the generator maps diverse movie textures to
+%      the more homogeneous game rendering."
+%
+%   [Success cases] ~60 words
+%     "Figure~\ref{fig:21_success} shows 10 successful translations.
+%      The model consistently transfers film-grain texture and colour
+%      grading to game frames, particularly for well-lit frontal shots
+%      with clear clothing texture. [Add 1-2 specific visual observations
+%      from your actual results, e.g., colour shift, grain, contrast.]"
+%
+%   [Failure cases] ~60 words
+%     "Figure~\ref{fig:21_fail} shows 10 failure cases.
+%      Common failures include: (1) background style leaking onto
+%      foreground where YOLO bounding boxes were imprecise; (2) colour
+%      artefacts on dark game scenes with low texture information;
+%      (3) temporal inconsistency visible across consecutive frames
+%      as the model has no inter-frame memory."
+%
+%   [Limitation] ~40 words
+%     "The horse2zebra pretrained weights introduce a domain gap:
+%      the generator's prior is tuned to animal textures rather than
+%      human clothing.  Fine-tuning for only 8 epochs partially corrects
+%      this; longer training or a more suitable pretrained base
+%      (e.g.\ cityscapes) may improve results."
+%
+% KEY THINGS TO STATE:
+%   - Hardware used and training time (explicitly required for marks)
+%   - Both translation directions evaluated
+%   - Why these metrics (FID = global distribution, LPIPS = local perceptual)
+%   - Honest failure analysis (domain gap from horse2zebra, no temporal coherence)
+%
+% FIGURES:
+%   Fig 4 — Metrics table.
+%            Columns: Direction | FID ↓ | KID ↓ | LPIPS ↓
+%            Rows: AtoB (game→movie), BtoA (movie→game)
+%            Save to: paper/figs/ (as a LaTeX table, not image)
+%
+%   Fig 5 — Success cases: 2×5 or 5×2 grid, input|output pairs.
+%            Pick 10 frames where the style transfer looks convincing.
+%            From: output/q2_1/cut_data/testA/ (input)
+%                  output/q2_1/<run>/fake_M/ (output)
+%            Save to: paper/figs/success_21.pdf
+%            Caption: "Successful game-to-movie translations (CUT, 2.1).
+%                      Left: input game frame. Right: translated output."
+%
+%   Fig 6 — Failure cases: same format, 10 bad examples.
+%            Save to: paper/figs/fail_21.pdf
+%            Caption: "Failure cases: [describe 2-3 specific failure modes]."
+%
+% LATEX SKELETON:
+% \begin{table}[t]
+%   \centering
+%   \caption{CUT translation metrics (2.1 full-frame model).
+%            FID and KID measure distribution similarity; LPIPS measures
+%            perceptual patch distance. Lower is better for all.}
+%   \label{tab:metrics21}
+%   \begin{tabular}{lrrr}
+%     \toprule
+%     Direction & FID\,↓ & KID\,↓ & LPIPS\,↓ \\
+%     \midrule
+%     Game $\to$ Movie (AtoB) & -- & -- & -- \\
+%     Movie $\to$ Game (BtoA) & -- & -- & -- \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
+
+
+% ============================================================
+\subsection{Local (Temporal) Enhancement}
+% ============================================================
+% TASK: improve 2.1 using local (patch) methods and/or temporal approaches.
+%       Submit enhanced video. ≥10 key-frame comparisons. 250 words.
+%
+% SUGGESTED STRUCTURE:
+%
+%   [Motivation] ~40 words
+%     "The 2.1 model applies style transfer to full frames, mixing
+%      foreground human style with background. We address this with
+%      patch-level compositing: translating only detected human regions
+%      and compositing them onto the original frame."
+%
+%   [Method overview] ~80 words
+%     "For each test frame: (1) YOLO detects human bounding boxes;
+%      (2) the 1.2 GCN classifies each patch, discarding `others';
+%      (3) kept crops are translated by a CUT model fine-tuned on the
+%      1.3-selected patches (game: X, movie: Y patches); (4) translated
+%      crops are resized to original bbox dimensions and composited onto
+%      the untranslated frame; (5) exponential moving average (EMA)
+%      temporal blending (\(\alpha=0.3\)) reduces inter-frame flicker."
+%     Fill in actual X, Y counts.
+%
+%   [Why patch fine-tuning helps] ~40 words
+%     "Fine-tuning on human patches (vs.\ full frames) aligns the
+%      generator's training distribution with the inference distribution:
+%      the model sees the same crop scale and content at both train and
+%      test time, reducing identity mapping artefacts."
+%
+%   [Evaluation — metrics] ~40 words
+%     "Table~\ref{tab:metrics22} compares 2.1 and 2.2 metrics on the
+%      same test splits.  The enhanced model achieves FID\,=\,X vs.\
+%      2.1's Y, a Z\,\% improvement, confirming that patch-level
+%      training narrows the domain gap for human regions."
+%
+%   [Key-frame comparison] ~30 words
+%     "Figure~\ref{fig:keyframes} shows 10 key frames: original,
+%      2.1 baseline, and 2.2 enhanced.  The patch compositing
+%      preserves background fidelity while improving human-region
+%      style consistency."
+%
+%   [Critical evaluation / failure analysis] ~60 words
+%     "Remaining failure modes: (1) GCN misclassification of `others'
+%      (9.8\% val accuracy) causes occasional style transfer on
+%      non-human regions; (2) EMA blending introduces ghosting on fast
+%      motion; (3) patch boundary artefacts are visible at bbox edges
+%      due to hard compositing without feathering; (4) the horse2zebra
+%      pretrained base still limits stylistic range."
+%
+% KEY THINGS TO STATE:
+%   - Hardware: NVIDIA GeForce RTX 2080 Ti (NCC HPC cluster) — state this explicitly
+%   - Training time for patch fine-tuning (check slurm logs for wall time)
+%   - Explicit comparison to 2.1 (this is the main point)
+%   - Both videos submitted (baseline 2.1 and enhanced 2.2)
+%   - Honest failure analysis — the marker rewards critical thinking
+%
+% FIGURES:
+%   Fig 7 — Metrics comparison table (2.1 vs 2.2).
+%            Columns: Model | FID ↓ | KID ↓ | LPIPS ↓
+%            Rows: 2.1 Full-frame CUT, 2.2 Patch CUT + EMA
+%
+%   Fig 8 — Key-frame comparison (≥10 frames required).
+%            Three-column layout: Original | 2.1 Baseline | 2.2 Enhanced
+%            Extract representative frames from:
+%              output/q2_1/<run>/enhanced_video_21.mp4 (2.1)
+%              output/q2_2/<run>/enhanced_model.mp4   (2.2)
+%            Save individual frames as: paper/figs/kf_XX_orig.jpg etc.
+%            or use a script to make a contact sheet.
+%            Caption: "Key frame comparisons: original (left),
+%                      2.1 full-frame CUT (centre), 2.2 patch-level
+%                      CUT + EMA blending (right)."
+%            Save to: paper/figs/keyframes_comparison.pdf
+%
+%   Fig 9 (optional but strong) — Patch compositing diagram.
+%            Annotated figure showing:
+%              (a) original frame with YOLO boxes drawn
+%              (b) extracted patches
+%              (c) translated patches
+%              (d) composited result
+%            Save to: paper/figs/compositing_pipeline.pdf
+%            This is a diagram so word-count exempt and tells the story
+%            of 2.2 at a glance.
+%
+% LATEX SKELETON:
+% \begin{figure}[t]
+%   \centering
+%   \includegraphics[width=\linewidth]{figs/keyframes_comparison.pdf}
+%   \caption{Ten key frames from the test video: original (left),
+%            2.1 full-frame CUT baseline (centre), and 2.2 patch-level
+%            CUT with EMA temporal blending (right).}
+%   \label{fig:keyframes}
+% \end{figure}
+%
+% \begin{table}[t]
+%   \centering
+%   \caption{Metric comparison between 2.1 and 2.2 models.}
+%   \label{tab:metrics22}
+%   \begin{tabular}{lrrr}
+%     \toprule
+%     Model & FID\,↓ & KID\,↓ & LPIPS\,↓ \\
+%     \midrule
+%     2.1 Full-frame CUT   & -- & -- & -- \\
+%     2.2 Patch CUT + EMA  & -- & -- & -- \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}

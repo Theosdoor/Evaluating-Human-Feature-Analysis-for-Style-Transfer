@@ -43,7 +43,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 
 **WandB:** copy `.env.example` → `.env` and set `WANDB_API_KEY` / `WANDB_PROJECT`.
 
-**Slurm (HPC):** partition `ug-gpu-small`, `--gres=gpu:turing:1`, 5 h, 28 GB RAM. Edit the last block of the target script before submitting.
+**Slurm (HPC):** partition `ug-gpu-small`, `--gres=gpu:turing:1`, 5 h, 28 GB RAM. Edit the last block of the target script before submitting. GPU used: **NVIDIA GeForce RTX 2080 Ti** (NCC HPC cluster). Always cite this in the report.
 
 ---
 

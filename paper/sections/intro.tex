@@ -1,2 +1,36 @@
 \section{Introduction}
 
+% ============================================================
+% No explicit word limit, but keep it short — the marks are in
+% sections 1 and 2. 1-2 paragraphs is plenty.
+% Excluded from word count: bibliography, equations, figures.
+% ============================================================
+
+% SUGGESTED CONTENT:
+%
+%   Para 1 — Context and motivation (~3 sentences)
+%     Describe the domain gap between game and movie footage.
+%     Explain why human regions are the focus (foreground style matters
+%     most; background mixing hurts quality in full-frame translation).
+%     One sentence on the broader application (game realism enhancement).
+%
+%   Para 2 — Approach summary (~3 sentences)
+%     "We present a pipeline that: (1) extracts human patches via
+%      YOLOv8~\cite{jocher2023} with quality-aware selection; (2)
+%      classifies patches into five pose categories using a GCN trained
+%      on COCO keypoints; (3) selects diverse representative patches via
+%      DINOv2 clustering; and (4) applies CUT~\cite{park2020}
+%      patch-level style transfer with EMA temporal blending."
+%     Reference Figure showing the overall pipeline if you make one.
+%
+% KEY REFERENCES TO CITE:
+%   - CUT: Park et al. (2020), "Contrastive Unpaired Translation" — the core model
+%   - CycleGAN: Zhu et al. (2017) — precursor, good for context
+%   - YOLOv8: Jocher et al. (2023), ultralytics/ultralytics
+%   - DINOv2: Oquab et al. (2023) — for 1.3 embedding
+%   - GCN: Kipf & Welling (2017), "Semi-Supervised Classification with GCNs"
+%   - ST-GCN (if you implement temporal GCN): Yan et al. (2018)
+%
+% OPTIONAL FIGURE (no word cost):
+%   A pipeline diagram showing the flow 1.1→1.2→1.3→2.1→2.2.
+%   Save to: paper/figs/pipeline_overview.pdf
