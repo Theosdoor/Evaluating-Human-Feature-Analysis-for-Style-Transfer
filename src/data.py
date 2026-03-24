@@ -217,7 +217,7 @@ def _embed_patches(paths: list[str], model, device: str, batch_size: int = 64) -
     import torchvision.transforms as T
 
     transform = T.Compose([
-        T.Resize((224, 224), interpolation=T.InterpolationMode.BICUBIC),
+        T.Resize((518, 518), interpolation=T.InterpolationMode.BICUBIC),
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])

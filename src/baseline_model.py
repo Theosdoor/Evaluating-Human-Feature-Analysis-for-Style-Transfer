@@ -67,20 +67,21 @@ def ensure_pretrained_models(cut_dir: str) -> None:
         cut_dir, "checkpoints", "horse2zebra_cut_pretrained", "latest_net_G.pth"
     )
 
-    if not os.path.exists(tar_path):
-        print(f"[CUT] Downloading pretrained archive → {tar_path}")
-        subprocess.run(["wget", "-O", tar_path, PRETRAINED_URL], check=True)
-
-    if not os.path.exists(probe):
-        print("[CUT] Extracting pretrained archive…")
-        subprocess.run(["tar", "-xf", tar_path], check=True, cwd=cut_dir)
-        os.remove(tar_path)
-        print("[CUT] Removed pretrained archive after extraction.")
-    else:
+    if os.path.exists(probe):
         print("[CUT] Pretrained checkpoints already present.")
         if os.path.exists(tar_path):
             os.remove(tar_path)
             print("[CUT] Removed leftover pretrained archive.")
+        return
+
+    if not os.path.exists(tar_path):
+        print(f"[CUT] Downloading pretrained archive → {tar_path}")
+        subprocess.run(["wget", "-O", tar_path, PRETRAINED_URL], check=True)
+
+    print("[CUT] Extracting pretrained archive…")
+    subprocess.run(["tar", "-xf", tar_path], check=True, cwd=cut_dir)
+    os.remove(tar_path)
+    print("[CUT] Removed pretrained archive after extraction.")
 
 
 # ---------------------------------------------------------------------------
