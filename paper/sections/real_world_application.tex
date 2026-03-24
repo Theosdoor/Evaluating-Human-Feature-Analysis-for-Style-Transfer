@@ -137,14 +137,18 @@
 %      patch-level compositing: translating only detected human regions
 %      and compositing them onto the original frame."
 %
-%   [Method overview] ~80 words
+%   [Method overview] ~90 words
 %     "For each test frame: (1) YOLO detects human bounding boxes;
 %      (2) the 1.2 GCN classifies each patch, discarding `others';
 %      (3) kept crops are translated by a CUT model fine-tuned on the
 %      1.3-selected patches (game: X, movie: Y patches); (4) translated
 %      crops are resized to original bbox dimensions and composited onto
-%      the untranslated frame; (5) exponential moving average (EMA)
-%      temporal blending (\(\alpha=0.3\)) reduces inter-frame flicker."
+%      the untranslated frame via a spatially feathered mask — a
+%      10-pixel ramp produced by Gaussian-blurring (kernel 21$\times$21,
+%      $\sigma = 5$) a binary interior mask, blending the translated crop
+%      against the original frame at all bbox edges;
+%      (5) exponential moving average (EMA) temporal blending
+%      (\(\alpha=0.3\)) reduces inter-frame flicker."
 %     Fill in actual X, Y counts.
 %
 %   [Why patch fine-tuning helps] ~40 words
@@ -172,9 +176,11 @@
 %     "Remaining failure modes: (1) GCN misclassification of `others'
 %      (9.8\% val accuracy) causes occasional style transfer on
 %      non-human regions; (2) EMA blending introduces ghosting on fast
-%      motion; (3) patch boundary artefacts are visible at bbox edges
-%      due to hard compositing without feathering; (4) the horse2zebra
-%      pretrained base still limits stylistic range."
+%      motion; (3) the 10-pixel Gaussian feather (kernel $21\times21$,
+%      $\sigma=5$) mitigates bbox boundary artefacts but a visible seam
+%      can persist when the translated crop colour differs strongly from
+%      the adjacent background; (4) the horse2zebra pretrained base
+%      still limits stylistic range."
 %
 % KEY THINGS TO STATE:
 %   - Hardware: NVIDIA GeForce RTX 2080 Ti (NCC HPC cluster) — state this explicitly

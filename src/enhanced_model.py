@@ -149,6 +149,7 @@ def translate_test_video_enhanced(
     patch_size: int = 256,
     use_stgcn: bool = True,
     stgcn_window: int = 5,
+    feather_px: int = 10,
 ) -> str:
     """
     Apply patch-level style transfer to human regions in the test video,
@@ -191,6 +192,9 @@ def translate_test_video_enhanced(
                           (ST-GCN, Yan et al. 2018) over stgcn_window consecutive
                           frames per tracked person instead of per-frame GCN.
         stgcn_window    : temporal window size T when use_stgcn=True (default 5).
+        feather_px      : width in pixels of the Gaussian-feathered border blended
+                          between the translated crop and the original frame.
+                          Set to 0 to disable (hard paste).
 
     Returns:
         Path to the output video.
@@ -290,6 +294,7 @@ def translate_test_video_enhanced(
     composited_paths = _composite_frames(
         frame_paths, crop_metadata, translated_map,
         composited_dir, blend_alpha=blend_alpha, patch_size=patch_size,
+        feather_px=feather_px,
     )
 
     return write_video(composited_paths, os.path.join(save_dir, output_name), fps)
@@ -458,6 +463,23 @@ def _translate_crops(
     return translated
 
 
+def _feather_mask(h: int, w: int, feather: int) -> np.ndarray:
+    """
+    Return a float32 HxWx1 mask that is 1 in the centre and smoothly fades
+    to 0 at the border over `feather` pixels using a Gaussian blur.
+    """
+    if feather <= 0:
+        return np.ones((h, w, 1), dtype=np.float32)
+    # Start with 1s, zero out the border band, then blur to get a gradient.
+    mask = np.zeros((h, w), dtype=np.float32)
+    f = min(feather, h // 2, w // 2)
+    if f > 0:
+        mask[f:h - f, f:w - f] = 1.0
+    ksize = feather * 2 + 1  # always odd
+    mask = cv2.GaussianBlur(mask, (ksize, ksize), feather / 2.0)
+    return mask[:, :, np.newaxis]
+
+
 def _composite_frames(
     frame_paths: list[str],
     crop_metadata: list[dict],
@@ -465,13 +487,17 @@ def _composite_frames(
     out_dir: str,
     blend_alpha: float,
     patch_size: int,
+    feather_px: int = 10,
 ) -> list[str]:
     """
     Composite translated crops back onto their source frames.
 
     For each frame, pastes all translated crops at their original bbox
-    coordinates.  Applies temporal blending (EMA) per detection index
-    across consecutive frames when blend_alpha > 0.
+    coordinates.  Applies:
+      - spatial feathering: Gaussian-blended border (feather_px wide) between
+        the translated crop and the original frame, avoiding hard edges.
+      - temporal blending: EMA per detection index across consecutive frames
+        when blend_alpha > 0, reducing flicker.
 
     Returns sorted list of composited frame paths.
     """
@@ -525,7 +551,16 @@ def _composite_frames(
                     )
 
             prev_crops[det_idx] = translated_crop.copy()
-            frame[y1:y2, x1:x2] = translated_crop
+
+            # Spatial feathering: blend translated crop into original frame
+            # with a Gaussian-feathered mask to avoid hard bbox borders.
+            if feather_px > 0:
+                mask = _feather_mask(target_h, target_w, feather_px)
+                orig = frame[y1:y2, x1:x2].astype(np.float32)
+                blended = translated_crop.astype(np.float32) * mask + orig * (1.0 - mask)
+                frame[y1:y2, x1:x2] = blended.astype(np.uint8)
+            else:
+                frame[y1:y2, x1:x2] = translated_crop
 
         cv2.imwrite(out_path, frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         out_paths.append(out_path)
