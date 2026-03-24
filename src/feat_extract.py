@@ -203,8 +203,6 @@ def score_detection(det):
       0.30 — YOLO confidence
       0.25 — relative size (penalise tiny or overly large crops)
       0.20 — sharpness (relative to per-source blur threshold)
-      0.15 — centering
-      0.10 — aspect ratio (tall crops preferred over wide)
     """
     score = 0.0
 
@@ -220,18 +218,6 @@ def score_detection(det):
     # 3. Sharpness — normalise against threshold so film/game are comparable
     blur_norm = min(det['blur_score'] / (det['blur_thresh'] * 3), 1.0)
     score += blur_norm * 0.20
-
-    # 4. Centering
-    score += det['centering'] * 0.15
-
-    # 5. Aspect ratio — humans should be taller than wide
-    x1, y1, x2, y2 = det['bbox']
-    w, h = x2 - x1, y2 - y1
-    if w > 0:
-        ar = h / w
-        if ar >= 1.0:
-            ar_score = min((ar - 1.0) / 2.5, 1.0)
-            score += ar_score * 0.10
 
     return round(score, 4)
 

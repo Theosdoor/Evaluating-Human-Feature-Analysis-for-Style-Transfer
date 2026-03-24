@@ -76,6 +76,13 @@ NUM_CLASSES  = len(CLASSES)   # 5
 LABEL_TO_IDX = {cls: i for i, cls in enumerate(CLASSES)}
 IDX_TO_LABEL = {i: cls for i, cls in enumerate(CLASSES)}
 
+# Symmetric left-right keypoint pairs (COCO 17-point order).
+# Used to mirror a pose graph for horizontal flip augmentation.
+_FLIP_PAIRS = [
+    (1, 2), (3, 4), (5, 6), (7, 8),
+    (9, 10), (11, 12), (13, 14), (15, 16),
+]
+
 
 # ---------------------------------------------------------------------------
 # Graph construction
@@ -121,6 +128,19 @@ def keypoints_to_graph(kps: np.ndarray, bbox: np.ndarray) -> Data:
         x          = torch.from_numpy(feats),
         edge_index = _EDGE_INDEX.clone(),
     )
+
+
+def _flip_graph(data: Data) -> Data:
+    """Return a horizontally flipped copy of a pose graph.
+
+    Flips x-coordinates (x_norm → 1 − x_norm) and swaps left/right
+    keypoint pairs so the graph remains geometrically consistent.
+    """
+    x = data.x.clone()
+    x[:, 0] = 1.0 - x[:, 0]
+    for i, j in _FLIP_PAIRS:
+        x[[i, j]] = x[[j, i]]
+    return Data(x=x, edge_index=data.edge_index.clone())
 
 
 # ---------------------------------------------------------------------------
@@ -355,9 +375,9 @@ def _eval_epoch(model, loader, criterion, device):
 
 
 class _LabelledDataset(torch.utils.data.Dataset):
-    """Pairs (label_idx, graph) for training."""
-    def __init__(self, labelled_items, keypoints_dict):
-        self.items = [
+    """Pairs (label_idx, graph) for training. augment=True adds H-flipped copies."""
+    def __init__(self, labelled_items, keypoints_dict, augment: bool = False):
+        base = [
             (LABEL_TO_IDX[label], keypoints_to_graph(
                 keypoints_dict[fname]["kps"],
                 keypoints_dict[fname]["bbox"],
@@ -365,6 +385,7 @@ class _LabelledDataset(torch.utils.data.Dataset):
             for fname, label in labelled_items
             if keypoints_dict.get(fname) is not None
         ]
+        self.items = base + [(lbl, _flip_graph(g)) for lbl, g in base] if augment else base
 
     def __len__(self):
         return len(self.items)
@@ -467,8 +488,8 @@ def train_gcn(
         random_state= seed,
     )
 
-    train_ds = _LabelledDataset(list(zip(f_train, l_train)), keypoints_dict)
-    val_ds   = _LabelledDataset(list(zip(f_val,   l_val)),   keypoints_dict)
+    train_ds = _LabelledDataset(list(zip(f_train, l_train)), keypoints_dict, augment=True)
+    val_ds   = _LabelledDataset(list(zip(f_val,   l_val)),   keypoints_dict, augment=False)
 
     # Oversample minority classes so they appear proportionally each epoch.
     # label_counts computed over the full labelled set (train+val); we want

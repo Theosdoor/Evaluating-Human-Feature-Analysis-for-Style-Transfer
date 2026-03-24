@@ -335,17 +335,23 @@ if RUN_GCN_ABLATION:
 # ## 1.3 Training Data Selection
 
 # %%
-# For now, just use all data from the gcn results directory
-from src.data import get_data_split, flat_paths, flat_paths_by_domain
+# 1.3 — DINOv2 cluster-then-select
+# Embed patches with DINOv2 ViT-B/14, cluster per (class × domain) group,
+# select the centroid-nearest patch from each cluster.
+from src.data import select_with_dino_clustering
 
-split = get_data_split(
-    gcn_save_path,
-    train_split=1.0,
-    exclude_classes=['others']
+DINO_CKPT = os.path.join(PROJECT_ROOT, "models/dinov2_vitb14_reg4_pretrain.pt")
+TRAIN_SELECT_BUDGET = 2000  # total patches selected for CUT fine-tuning
+
+train_game, train_movie = select_with_dino_clustering(
+    gcn_dir        = gcn_save_path,
+    dino_ckpt      = DINO_CKPT,
+    device         = DEVICE,
+    total_budget   = TRAIN_SELECT_BUDGET,
+    exclude_classes= ["others"],
+    umap_save_path = os.path.join(FIGURES_DIR, "dino_umap.png"),
 )
-
-train_game, train_movie = flat_paths_by_domain(split['train'])
-val_game, val_movie     = flat_paths_by_domain(split['val'])
+print(f"[DATA] 1.3 selection: {len(train_game)} game  {len(train_movie)} movie")
 
 
 # %% [markdown]
