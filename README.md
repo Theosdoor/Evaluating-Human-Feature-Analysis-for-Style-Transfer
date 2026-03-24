@@ -12,10 +12,7 @@ bash scripts/install_externals.sh
 # 3. Install Python dependencies (requires uv)
 uv sync
 
-# 4. Set up WandB
-cp .env.example .env   # then fill in WANDB_API_KEY / WANDB_PROJECT
-
-# 5. Run the pipeline
+# 4. Run the pipeline
 source .venv/bin/activate
 python3 nb_main.py
 ```

@@ -88,7 +88,7 @@ print(f"Using device: {DEVICE}")
 # Model choices
 
 # 1.1 extract model
-EXTRACT_MODEL = "yolov8m"
+EXTRACT_MODEL = "yolo26m"
 POSE_MODEL    = "yolo26m-pose"
 EXTRACT_MODEL_PATH = os.path.join(PROJECT_ROOT, f"models/{EXTRACT_MODEL}.pt")
 POSE_MODEL_PATH    = os.path.join(PROJECT_ROOT, f"models/{POSE_MODEL}.pt")
@@ -118,7 +118,7 @@ RUN_FULL_PIPELINE = False # True = run all stages ignoring reload flags. False =
 
 # -- 1.1 --
 RELOAD_EXTRACT = None
-RELOAD_EXTRACT = "20260314-195748"
+# RELOAD_EXTRACT = "20260314-195748"
 
 # -- 1.2 GCN --
 # GCN training is a one-time offline step — run scripts/train_gcn.py to produce
@@ -132,11 +132,11 @@ RELOAD_GCN = "20260324-151423"
 RELOAD_TRAIN_SELECT = None
 
 # -- 2.1 --
-RUN_FINETUNE_21 = True
+RUN_FINETUNE_21 = False
 RUN_TRANSLATE_VIDEO_21 = True
 
 # -- 2.2 --
-RUN_FINETUNE_22 = True
+RUN_FINETUNE_22 = False
 RUN_TRANSLATE_VIDEO_22 = True
 
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
