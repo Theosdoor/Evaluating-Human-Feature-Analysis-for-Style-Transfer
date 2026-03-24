@@ -14,6 +14,7 @@ select_with_dino_clustering() is the main entry point for 1.3:
 get_data_split() is retained for val splits used elsewhere.
 """
 
+import json
 import os
 import random
 from collections import defaultdict
@@ -150,6 +151,32 @@ def flat_paths_by_domain(
                 game.append(p)
             elif d == 'movie':
                 movie.append(p)
+    return game, movie
+
+
+# ---------------------------------------------------------------------------
+# Train-split persistence
+# ---------------------------------------------------------------------------
+
+_SPLIT_FILENAME = "train_split.json"
+
+
+def save_train_split(save_dir: str, game_paths: list[str], movie_paths: list[str]) -> None:
+    """Save selected (game_paths, movie_paths) to <save_dir>/train_split.json."""
+    os.makedirs(save_dir, exist_ok=True)
+    out = os.path.join(save_dir, _SPLIT_FILENAME)
+    with open(out, "w") as f:
+        json.dump({"game": game_paths, "movie": movie_paths}, f)
+    print(f"[DATA] Train split saved → {out}  ({len(game_paths)} game, {len(movie_paths)} movie)")
+
+
+def load_train_split(save_dir: str) -> tuple[list[str], list[str]]:
+    """Load (game_paths, movie_paths) from <save_dir>/train_split.json."""
+    src = os.path.join(save_dir, _SPLIT_FILENAME)
+    with open(src) as f:
+        data = json.load(f)
+    game, movie = data["game"], data["movie"]
+    print(f"[DATA] Train split loaded ← {src}  ({len(game)} game, {len(movie)} movie)")
     return game, movie
 
 

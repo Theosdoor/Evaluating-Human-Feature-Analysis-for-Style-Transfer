@@ -50,7 +50,7 @@ from src.enhanced_model import (
 )
 from src.utils import finetune_cut
 from src.gcn import reload_gcn_results, run_gcn_inference_pretrained
-from src.data import select_with_dino_clustering
+from src.data import select_with_dino_clustering, save_train_split, load_train_split
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
 TRAIN_DATA = [
@@ -118,7 +118,7 @@ RUN_FULL_PIPELINE = False # True = run all stages ignoring reload flags. False =
 
 # -- 1.1 --
 RELOAD_EXTRACT = None
-RELOAD_EXTRACT = "20260324-104659"
+RELOAD_EXTRACT = "20260314-195748"
 
 # -- 1.2 GCN --
 # GCN training is a one-time offline step — run scripts/train_gcn.py to produce
@@ -135,7 +135,7 @@ RELOAD_GCN = "20260320-162455"
     # others                 5/51   (9.8%)
 
 # -- 1.3 --
-# RELOAD_TRAIN_SELECT = None
+RELOAD_TRAIN_SELECT = None
 
 # -- 2.1 --
 RUN_FINETUNE_21 = False
@@ -146,8 +146,9 @@ RUN_FINETUNE_22 = True
 RUN_TRANSLATE_VIDEO_22 = True
 
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
-reload_extract = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
-reload_gcn     = None if RUN_FULL_PIPELINE else RELOAD_GCN
+reload_extract       = None if RUN_FULL_PIPELINE else RELOAD_EXTRACT
+reload_gcn           = None if RUN_FULL_PIPELINE else RELOAD_GCN
+reload_train_select  = None if RUN_FULL_PIPELINE else RELOAD_TRAIN_SELECT
 
 # %% [markdown]
 # ## 1.1. Human Patch Extraction
@@ -255,14 +256,21 @@ else:
 DINO_CKPT = os.path.join(PROJECT_ROOT, "models/dinov2_vitb14_reg4_pretrain.pt")
 TRAIN_SELECT_BUDGET = 2000  # total patches selected for CUT fine-tuning
 
-train_game, train_movie = select_with_dino_clustering(
-    gcn_dir        = gcn_save_path,
-    dino_ckpt      = DINO_CKPT,
-    device         = DEVICE,
-    total_budget   = TRAIN_SELECT_BUDGET,
-    exclude_classes= ["others"],
-    umap_save_path = os.path.join(FIGURES_DIR, "dino_umap.png"),
-)
+train_select_save_path = os.path.join(SAVE_DIR, "train_select", reload_train_select or SAVE_NAME)
+
+if reload_train_select:
+    train_game, train_movie = load_train_split(train_select_save_path)
+else:
+    train_game, train_movie = select_with_dino_clustering(
+        gcn_dir        = gcn_save_path,
+        dino_ckpt      = DINO_CKPT,
+        device         = DEVICE,
+        total_budget   = TRAIN_SELECT_BUDGET,
+        exclude_classes= ["others"],
+        umap_save_path = os.path.join(FIGURES_DIR, "dino_umap.png"),
+    )
+    save_train_split(train_select_save_path, train_game, train_movie)
+
 print(f"[DATA] 1.3 selection: {len(train_game)} game  {len(train_movie)} movie")
 
 
