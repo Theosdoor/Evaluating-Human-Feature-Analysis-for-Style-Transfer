@@ -8,41 +8,26 @@
 
 % ============================================================
 \subsection{Human Patch Extraction}
+
+We use \texttt{YOLO26m} \cite{yolo26_ultralytics} to detect and extract 4000 human patches from the training videos: 2000 for each domain (game/movie). 
+Longer videos should be more diverse, so this budget is split proportional to length, so longer videos represent more of the dataset. 
+To prioritise diverse patches, we reject frames with inter-frame mean absolute difference below \(\tau_{sc}=8\) (near-static shots), and enforce a minimum spacing of 10 frames between YOLO calls.
+Candidate patches are scored by a weighted combination of detection confidence, relative bounding-box area (maximum 15\% of frame) and Laplacian sharpness. Greedy diversity sampling then enforces a 10-frame temporal gap per video source. Hyperparameters were empirically chosen.
+[REMOVE THE GREEDY DIV SAMPLING? ITS CURRENTLY BROKEN BUT DON"T REALLY NEED IT]
 % ============================================================
 % TASK: adapt DL detection, propose lightweight useful-frame selection,
 %       submit 50 patch samples. Evaluate. 100 words.
 %
-% SUGGESTED STRUCTURE (≈100 words — every word counts):
-%   Sentence 1-2: method name, input, output.
-%     "We apply YOLOv8m [CITE] to each training video, extracting
-%      bounding-box crops of class `person' at every eligible frame."
-%   Sentence 3-4: frame selection (the lightweight algorithm):
-%     "To avoid redundant frames, we skip frames with inter-frame
-%      mean absolute difference below \(\tau_{sc}=8\) (static shots)
-%      and enforce a minimum spacing of 10 frames between YOLO calls.
-%      Candidate patches are scored by a weighted combination of
-%      detection confidence, relative bounding-box area (peak at 15\%
-%      of frame), and Laplacian sharpness; greedy diversity sampling
-%      then enforces a 10-frame temporal gap per video source."
-%   Sentence 5: result.
-%     "This yields 4,000 patches from 4 videos (2,000 game, 2,000 movie)."
+
 %
 % KEY THINGS TO JUSTIFY:
-%   - Why YOLOv8? (SOTA, fast, pretrained on COCO persons)
-%   - Why scene-change threshold? (avoids near-static shots)
-%   - Why blur threshold differs? (film grain vs game rendering)
 %   - Why greedy diversity? (prevents shot-repetition overfitting)
 %   - State the extraction thresholds as concrete numbers
 %
 % EVALUATION (fits in ≤20 words + a figure):
 %   - Quote the blur score range from _summary.txt: min 0.6, max 5351.5
-%   - Quote how many raw detections → selected (10674 → 4000)
 %
 % FIGURES:
-%   Fig 1a — 5×10 grid of sampled patches (50 required).
-%             Sample script: randomly pick 50 from output/extracted_humans/20260314-195748/
-%             Save to: paper/figs/patches_sample.pdf (or .png)
-%             Caption: "Random sample of 50 extracted human patches."
 %
 %   Fig 1b (optional, fits in same figure with subcaption) —
 %             Histogram of detection scores (before/after selection).
@@ -51,16 +36,60 @@
 %             Caption: "Score distribution of raw detections (grey) vs selected (blue)."
 %             This gives you empirical justification for the scoring in ≤1 sentence.
 %
-% LATEX SKELETON:
-% \begin{figure}[t]
-%   \centering
-%   \includegraphics[width=\linewidth]{figs/patches_sample.pdf}
-%   \caption{Random sample of 50 extracted human patches from game (top two rows) and movie (bottom three rows) domains.}
-%   \label{fig:patches}
-% \end{figure}
+% SUBMIT 50 IMAGES in submit/ folder, using a script to randomly sample
 
 
 \subsection{Classification}
+
+We classify patches using a 3-layer Graph Convolutional Network (GCN) \cite{kipf2017semisupervisedclassificationgraphconvolutional, Yan_Xiong_Lin_2018} on COCO \cite{lin2015microsoft} skeleton graphs with node features $(x, y, \text{confidence})$, and  confidence-weighted global pooling \cite{confidenceweightedpooling}.
+We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints for the skeletons.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figs/gcn_training_curves.png}
+  \caption{GCN training and validation curves.}
+  \label{fig:gcn_curves}
+\end{figure}
+
+\begin{table}[h]
+  \centering
+  \caption{GCN result on the entire dataset: patch distribution across classes. \texttt{No pose} means that the pose model didn't detect anything, which is kept seperate from \texttt{Others} to improve GCN performance on \texttt{Others}.}
+  \label{tab:gcn_distribution}
+  \begin{tabular}{lrr}
+    \toprule
+    Class & Count & \% \\
+    \midrule
+    \texttt{Head-shoulder front} & 1241 & 31.0 \\
+    \texttt{Head-shoulder back} & 915 & 22.9 \\
+    \texttt{Full-body back} & 713 & 17.8 \\
+    \texttt{Full-body front} & 703 & 17.6 \\
+    \texttt{Others} & 244 & 6.1 \\
+    \texttt{No pose} & 184 & 4.6 \\
+    \midrule
+    Total & 4000 & 100.0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering
+  \caption{GCN per-class validation accuracy on the manually annotated validation set. Poor performance on \texttt{Others} is expected, because the class contains every detected pose that does not fit into the other 4 classes and is therefore very heterogenous, so the model struggles to learn patterns.}
+  \label{tab:gcn_accuracy}
+  \begin{tabular}{lrrr}
+    \toprule
+    Class & Correct & Total & Acc.\ (\%) \\
+    \midrule
+    \texttt{Full-body front} & 54 & 72 & 75.0 \\
+    \texttt{Full-body back} & 18 & 19 & 94.7 \\
+    \texttt{Head-shoulder front} & 51 & 75 & 68.0 \\
+    \texttt{Head-shoulder back} & 18 & 27 & 66.7 \\
+    \texttt{Others} & 4 & 51 & 7.8 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+
 % ============================================================
 % TASK: classify 1.1 patches into 5 classes, submit 20/class.
 %       Explain, justify, evaluate. 100 words.
@@ -101,12 +130,6 @@
 %     Mitigation in 2.2: hard threshold on keypoint count.
 %
 % FIGURES:
-%   Fig 2a — 4×5 grid of 20 patches per class (4 main classes × 5 each, or
-%             20 per class across multiple figures).
-%             Sample: randomly pick 20 from each subdir in
-%             output/gcn_results/20260320-162455/<class>/
-%             Save to: paper/figs/cls_samples_<class>.pdf
-%             Tip: one combined figure with subcaptions per class saves space.
 %
 %   Fig 2b — GCN training curves (loss + accuracy over epochs).
 %             Source: output/gcn_results/20260320-162455/training_curves.png

@@ -103,7 +103,7 @@ def extract_humans_from_video(
     yolo_interval=10,
     scene_change_threshold=8.0,
     blur_threshold_film=40.0,
-    blur_threshold_game=100.0,
+    blur_threshold_game=40.0,
     yolo_batch_size=8,
 ):
     """
