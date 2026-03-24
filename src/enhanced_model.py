@@ -51,7 +51,7 @@ from tqdm import tqdm
 
 from cleanfid import fid as cleanfid
 
-from src.utils import extract_video_frames, write_video, run_cut_inference, finetune_cut
+from src.utils import extract_video_frames, write_video, run_cut_inference, finetune_cut, JPEG_QUALITY
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +382,7 @@ def _extract_test_patches(
             cv2.imwrite(
                 os.path.join(patch_dir, stem + ".jpg"),
                 cv2.resize(patch, (patch_size, patch_size)),
-                [cv2.IMWRITE_JPEG_QUALITY, 92],
+                [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
             )
             metadata.append({
                 "frame_idx":  frame_num,
@@ -529,7 +529,7 @@ def _composite_frames(
             prev_crops[det_idx] = translated_crop.copy()
             frame[y1:y2, x1:x2] = translated_crop
 
-        cv2.imwrite(out_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        cv2.imwrite(out_path, frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         out_paths.append(out_path)
 
     print(f"[ENH] Composited {len(out_paths)} frames → {out_dir}")

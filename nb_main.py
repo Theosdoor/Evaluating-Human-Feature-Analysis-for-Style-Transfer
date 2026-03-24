@@ -24,20 +24,44 @@ if IN_COLAB:
 install_script = os.path.join(PROJECT_ROOT, "scripts/install_externals.sh")
 subprocess.run([install_script], check=True)
 
-import glob
-import json
 import time
-import numpy as np
-import cv2
 import torch
 from tqdm import tqdm
 from ultralytics import YOLO # https://github.com/ultralytics/ultralytics
 
-from src.feat_extract import *
-from src.classification import *
-from src.baseline_model import *
-from src.enhanced_model import *
-from src.utils import *
+from src.feat_extract import (
+    reload_extracted_patches,
+    extract_humans_from_video,
+    score_detection,
+    diverse_sampling,
+    save_patches,
+    save_extraction_summary,
+)
+from src.classification import (
+    reload_classification_results,
+    classify_directory,
+    save_classification_summary,
+)
+from src.baseline_model import (
+    PRETRAINED_MODELS,
+    ensure_pretrained_models,
+    build_frame_dataset,
+    evaluate_translation,
+    translate_test_video,
+)
+from src.enhanced_model import (
+    finetune_cut_patches,
+    translate_test_video_enhanced,
+    compute_bbox_fid,
+)
+from src.utils import get_next_reclassify_dir, finetune_cut
+from src.gcn import (
+    run_gcn_pipeline,
+    reload_gcn_results,
+    plot_annotation_ablation,
+    run_gcn_inference_pretrained,
+)
+from src.data import select_with_dino_clustering
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "downloaded_data") # name of dir where downloaded videos are
 TRAIN_DATA = [
@@ -236,20 +260,7 @@ else:
         save_keypoints=True,              # writes _keypoints.npz to extract_save_path
     )
 
-    total_classified = sum(init_summary.values())
-    os.makedirs(init_cls_save_path, exist_ok=True)
-    summary_path = os.path.join(init_cls_save_path, "_summary.txt")
-    with open(summary_path, "w") as f:
-        f.write(f"Rule-based classification summary\n")
-        f.write(f"Save time: {time.strftime('%Y%m%d-%H%M%S')}\n")
-        f.write(f"Input: {extract_save_path}\n")
-        f.write(f"Total patches classified: {total_classified}\n\n")
-        f.write(f"{'Class':<25} {'Count':>6}  {'%':>6}\n")
-        f.write("-" * 42 + "\n")
-        for cls, count in sorted(init_summary.items(), key=lambda x: -x[1]):
-            pct = 100 * count / total_classified if total_classified else 0
-            f.write(f"{cls:<25} {count:>6}  {pct:>5.1f}%\n")
-    print(f"[CLS] Rule-based summary saved to {summary_path}")
+    save_classification_summary(init_cls_save_path, init_summary, extract_save_path)
 
 # %% [markdown]
 # Manual Annotation (optional — run scripts/annotate.py separately)
@@ -263,8 +274,6 @@ else:
 
 # %%
 # GCN Classification
-from src.gcn import run_gcn_pipeline, reload_gcn_results, plot_annotation_ablation
-
 # Committed checkpoint produced from manual annotations (one-time human effort).
 # Used by RUN_FULL_PIPELINE=True to run inference on fresh patches without retraining.
 GCN_PRETRAINED_CKPT = os.path.join(PROJECT_ROOT, "checkpoints", "gcn_model.pt")
@@ -291,33 +300,14 @@ if reload_gcn:
 elif os.path.exists(GCN_PRETRAINED_CKPT):
     # Full-pipeline run: load committed checkpoint, run inference on freshly extracted patches.
     # Skips retraining (which requires manual annotations tied to a specific extraction run).
-    import glob as _glob
-    import shutil as _shutil
-    from src.gcn import load_gcn_model, run_inference as gcn_run_inference
-    from src.gcn import extract_and_save_keypoints, load_keypoints, save_gcn_results
-
-    os.makedirs(gcn_save_path, exist_ok=True)
-    _shutil.copy(GCN_PRETRAINED_CKPT, os.path.join(gcn_save_path, "gcn_model.pt"))
-
-    npz_path = os.path.join(extract_save_path, "_keypoints.npz")
-    if os.path.exists(npz_path):
-        keypoints_dict = load_keypoints(npz_path)
-        print(f"[GCN] Loaded cached keypoints ({len(keypoints_dict)} patches)")
-    else:
-        from ultralytics import YOLO as _YOLO
-        _pose_model = _YOLO(POSE_MODEL_PATH)
-        _pose_model.to(DEVICE)
-        keypoints_dict = extract_and_save_keypoints(_pose_model, extract_save_path, npz_path)
-
-    gcn_model = load_gcn_model(gcn_save_path, DEVICE, hidden=GCN_HIDDEN)
-    all_fnames = sorted(
-        os.path.basename(p)
-        for p in _glob.glob(os.path.join(extract_save_path, "*.jpg")) +
-                 _glob.glob(os.path.join(extract_save_path, "*.png"))
+    results, summary = run_gcn_inference_pretrained(
+        ckpt_path         = GCN_PRETRAINED_CKPT,
+        extract_save_path = extract_save_path,
+        gcn_save_path     = gcn_save_path,
+        pose_model_path   = POSE_MODEL_PATH,
+        device            = DEVICE,
+        hidden            = GCN_HIDDEN,
     )
-    results = gcn_run_inference(gcn_model, all_fnames, keypoints_dict, DEVICE)
-    summary = save_gcn_results(results, extract_save_path, gcn_save_path, per_class_val_acc=None)
-    print(f"[GCN] Inference complete (pretrained ckpt): {sum(summary.values())} patches classified")
 else:
     if GCN_LABEL_SOURCE == "manual":
         if not RELOAD_ANNOTATIONS:
@@ -373,8 +363,6 @@ if RUN_GCN_ABLATION:
 # 1.3 — DINOv2 cluster-then-select
 # Embed patches with DINOv2 ViT-B/14, cluster per (class × domain) group,
 # select the centroid-nearest patch from each cluster.
-from src.data import select_with_dino_clustering
-
 DINO_CKPT = os.path.join(PROJECT_ROOT, "models/dinov2_vitb14_reg4_pretrain.pt")
 TRAIN_SELECT_BUDGET = 2000  # total patches selected for CUT fine-tuning
 
@@ -415,7 +403,7 @@ trainA, trainB, testA, testB = build_frame_dataset(
 if RUN_FINETUNE_21:
     # Fine-tune from pretrained weights — produces FULLFRAME_MODEL checkpoint
     # (copies PRETRAINED_MODEL first, so original weights are never modified)
-    finetune_cut_fullframe(
+    finetune_cut(
         cut_dir, PRETRAINED_MODEL, FULLFRAME_MODEL, frame_dataroot, DEVICE,
         n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
     )

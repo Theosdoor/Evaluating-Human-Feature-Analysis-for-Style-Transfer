@@ -1,7 +1,7 @@
 """
 src/utils.py
 
-Shared utilities used across baseline_model.py and enhanced_model.py.
+Shared utilities for both notebook and src/ modules.
 
 Video I/O
 ---------
@@ -26,6 +26,50 @@ import sys
 
 import cv2
 from tqdm import tqdm
+
+
+# ---------------------------------------------------------------------------
+# Shared constants
+# ---------------------------------------------------------------------------
+
+JPEG_QUALITY = 92
+
+MOVIE_KEYWORDS = ('movie', 'film', 'godfather', 'irishman', 'sopranos')
+GAME_KEYWORDS  = ('game', 'mafia')
+
+
+def is_movie_source(path: str) -> bool:
+    """Return True if path looks like movie-domain footage."""
+    p = path.lower()
+    return any(kw in p for kw in MOVIE_KEYWORDS)
+
+
+def is_game_source(path: str) -> bool:
+    """Return True if path looks like game-domain footage."""
+    p = path.lower()
+    return any(kw in p for kw in GAME_KEYWORDS)
+
+
+# ---------------------------------------------------------------------------
+# Video seek helper
+# ---------------------------------------------------------------------------
+
+def seek_and_read(cap: cv2.VideoCapture, target: int, cur: int):
+    """
+    Advance cap to frame `target` starting from `cur` using grab() for
+    skipped frames, then read() to decode the target frame.
+
+    Returns (frame, cur+1) where frame is the decoded BGR array (or None
+    if cap.read() fails).  Seeks backwards with set() if target < cur.
+    """
+    if target < cur:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+        cur = target
+    while cur < target:
+        cap.grab()
+        cur += 1
+    ret, frame = cap.read()
+    return (frame if ret else None), cur + 1
 
 
 # ---------------------------------------------------------------------------

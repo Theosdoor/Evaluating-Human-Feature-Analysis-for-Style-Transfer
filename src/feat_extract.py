@@ -22,6 +22,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
+from src.utils import JPEG_QUALITY, MOVIE_KEYWORDS, is_movie_source, seek_and_read
+
 
 # ---------------------------------------------------------------------------
 # Extraction
@@ -121,7 +123,7 @@ def extract_humans_from_video(
 
     Returns a list of detection dicts (no raw frame data stored).
     """
-    is_film = any(kw in video_path.lower() for kw in ['movie', 'film', 'godfather', 'irishman', 'sopranos'])
+    is_film = is_movie_source(video_path)
     blur_thresh = blur_threshold_film if is_film else blur_threshold_game
 
     cap = cv2.VideoCapture(video_path)
@@ -279,7 +281,7 @@ def _write_patch(args):
     cv2.imwrite(
         os.path.join(output_dir, filename),
         patch,
-        [cv2.IMWRITE_JPEG_QUALITY, 92],
+        [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
     )
     return True
 
@@ -330,21 +332,9 @@ def save_patches(detections, output_dir, io_workers=4):
                 futures = []
                 current_frame = 0
                 for idx, det in tqdm(items_sorted, desc=f"Patches {os.path.basename(video_path)}", unit="patch", leave=False):
-                    target_frame = det['frame_num']
-
-                    if target_frame < current_frame:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-                        current_frame = target_frame
-
-                    while current_frame < target_frame:
-                        cap.grab()
-                        current_frame += 1
-
-                    ret, frame = cap.read()
-                    if not ret:
+                    frame, current_frame = seek_and_read(cap, det['frame_num'], current_frame)
+                    if frame is None:
                         continue
-                    current_frame += 1
-
                     futures.append(executor.submit(_write_patch, (frame.copy(), det, idx, output_dir)))
 
                 cap.release()

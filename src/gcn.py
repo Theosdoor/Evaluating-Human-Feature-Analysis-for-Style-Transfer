@@ -56,19 +56,13 @@ from torch_geometric.utils import scatter
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
-from src.classification import CLASSES, ClassifierConfig, DEFAULT_CONFIG
+from src.classification import CLASSES, ClassifierConfig, DEFAULT_CONFIG, COCO_SKELETON
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-# COCO skeleton edges (0-indexed) — same as classification.py _SKELETON
-_SKELETON_EDGES = [
-    (0, 1), (0, 2), (1, 3), (2, 4),
-    (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
-    (5, 11), (6, 12), (11, 12),
-    (11, 13), (13, 15), (12, 14), (14, 16),
-]
+_SKELETON_EDGES = COCO_SKELETON   # shared with classification.py
 
 NUM_NODES    = 17
 NODE_FEAT_DIM = 3   # (x_norm, y_norm, conf)
@@ -880,6 +874,61 @@ def load_gcn_model(gcn_save_path: str, device: str, hidden: int = 128) -> PoseGC
     model.eval()
     print(f"[GCN] Loaded checkpoint from {ckpt_path}")
     return model
+
+
+def run_gcn_inference_pretrained(
+    ckpt_path: str,
+    extract_save_path: str,
+    gcn_save_path: str,
+    pose_model_path: str,
+    device: str,
+    hidden: int = 128,
+) -> tuple[dict, dict]:
+    """
+    Run GCN inference using a committed pretrained checkpoint on freshly
+    extracted patches, without retraining.
+
+    Copies ckpt_path into gcn_save_path, loads/reuses cached keypoints from
+    extract_save_path/_keypoints.npz (running pose inference if absent), then
+    classifies every patch.
+
+    Args:
+        ckpt_path         : committed .pt checkpoint (e.g. checkpoints/gcn_model.pt).
+        extract_save_path : extracted_humans/<run>/ directory.
+        gcn_save_path     : output/gcn_results/<run>/ directory to write into.
+        pose_model_path   : YOLO pose weights used to extract keypoints if not cached.
+        device            : "cuda" | "mps" | "cpu".
+        hidden            : GCN hidden dim (must match training, default 128).
+
+    Returns:
+        (results, summary) — same structure as run_gcn_pipeline.
+    """
+    import glob as _glob
+    import shutil as _shutil
+    from ultralytics import YOLO as _YOLO
+
+    os.makedirs(gcn_save_path, exist_ok=True)
+    _shutil.copy(ckpt_path, os.path.join(gcn_save_path, "gcn_model.pt"))
+
+    npz_path = os.path.join(extract_save_path, "_keypoints.npz")
+    if os.path.exists(npz_path):
+        keypoints_dict = load_keypoints(npz_path)
+        print(f"[GCN] Loaded cached keypoints ({len(keypoints_dict)} patches)")
+    else:
+        _pose_model = _YOLO(pose_model_path)
+        _pose_model.to(device)
+        keypoints_dict = extract_and_save_keypoints(_pose_model, extract_save_path, npz_path)
+
+    gcn_model = load_gcn_model(gcn_save_path, device, hidden=hidden)
+    all_fnames = sorted(
+        os.path.basename(p)
+        for p in _glob.glob(os.path.join(extract_save_path, "*.jpg"))
+             + _glob.glob(os.path.join(extract_save_path, "*.png"))
+    )
+    results = run_inference(gcn_model, all_fnames, keypoints_dict, device)
+    summary = save_gcn_results(results, extract_save_path, gcn_save_path, per_class_val_acc=None)
+    print(f"[GCN] Inference complete (pretrained ckpt): {sum(summary.values())} patches classified")
+    return results, summary
 
 
 def plot_annotation_ablation(

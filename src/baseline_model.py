@@ -18,9 +18,9 @@ Pipeline
 Shared helpers (video I/O, CUT subprocess, fine-tuning) live in src/utils.py.
 
 Public API imported in nb_main.py:
-    ensure_pretrained_models, build_frame_dataset, finetune_cut_fullframe,
+    ensure_pretrained_models, build_frame_dataset,
     translate_test_video, compute_metrics, save_comparison_grid, save_umap,
-    make_inference_dataroot, PRETRAINED_MODELS
+    make_inference_dataroot, evaluate_translation, PRETRAINED_MODELS
 """
 
 import glob
@@ -38,7 +38,10 @@ import torch
 from cleanfid import fid
 from tqdm import tqdm
 
-from src.utils import extract_video_frames, write_video, run_cut_inference, finetune_cut
+from src.utils import (
+    extract_video_frames, write_video, run_cut_inference, finetune_cut,
+    JPEG_QUALITY, GAME_KEYWORDS, seek_and_read,
+)
 
 
 PRETRAINED_URL = "http://efrosgans.eecs.berkeley.edu/CUT/pretrained_models.tar"
@@ -97,7 +100,7 @@ def build_frame_dataset(
     Returns (trainA_dir, trainB_dir, testA_dir, testB_dir).
     """
     game_paths  = {p for p in train_paths
-                   if any(kw in p.lower() for kw in ["game", "mafia"])}
+                   if any(kw in p.lower() for kw in GAME_KEYWORDS)}
     movie_paths = {p for p in train_paths if p not in game_paths}
 
     trainA = os.path.join(data_dir, "trainA")
@@ -158,23 +161,15 @@ def _extract_frames(
             continue
         cur = 0
         for det in tqdm(dets_sorted, desc=f"  {os.path.basename(vpath)}", leave=False):
-            target = det["frame_num"]
-            if target < cur:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, target)
-                cur = target
-            while cur < target:
-                cap.grab()
-                cur += 1
-            ret, frame = cap.read()
-            if not ret:
+            frame, cur = seek_and_read(cap, det["frame_num"], cur)
+            if frame is None:
                 continue
-            cur += 1
             tag   = os.path.splitext(os.path.basename(vpath))[0]
-            fname = f"{tag}_f{target:06d}.jpg"
+            fname = f"{tag}_f{det['frame_num']:06d}.jpg"
             cv2.imwrite(
                 os.path.join(output_dir, fname),
                 cv2.resize(frame, (286, 286)),
-                [cv2.IMWRITE_JPEG_QUALITY, 92],
+                [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
             )
             saved += 1
         cap.release()
@@ -209,66 +204,6 @@ def make_inference_dataroot(domain_dir: str, partner_dir: str) -> str:
     os.symlink(os.path.abspath(domain_dir),  os.path.join(tmp, "trainA"))
     os.symlink(os.path.abspath(partner_dir), os.path.join(tmp, "trainB"))
     return tmp
-
-
-# ---------------------------------------------------------------------------
-# Fine-tuning wrapper for Q2.1  (full-frame game ↔ movie)
-# ---------------------------------------------------------------------------
-
-def finetune_cut_fullframe(
-    cut_dir: str,
-    pretrained_exp: str,
-    finetune_exp: str,
-    frame_dataroot: str,
-    device: str,
-    n_epochs: int = 20,
-    n_epochs_decay: int = 10,
-) -> None:
-    """
-    Fine-tune the pretrained CUT checkpoint on full game/movie frames.
-
-    Copies pretrained_exp → finetune_exp before training so the original
-    weights are never modified and 2.2 can branch from the same base
-    independently.
-
-    frame_dataroot should be the data_dir passed to build_frame_dataset,
-    i.e. the directory containing trainA/ and trainB/.
-    """
-    finetune_cut(
-        cut_dir        = cut_dir,
-        pretrained_exp = pretrained_exp,
-        finetune_exp   = finetune_exp,
-        dataroot       = frame_dataroot,
-        device         = device,
-        n_epochs       = n_epochs,
-        n_epochs_decay = n_epochs_decay,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Inference helpers
-# ---------------------------------------------------------------------------
-
-def run_inference(
-    cut_dir: str,
-    exp_name: str,
-    input_dataroot: str,
-    results_dir: str,
-    direction: str,
-    device: str,
-) -> list[str]:
-    """
-    Thin wrapper around src.utils.run_cut_inference kept for API compatibility
-    with nb_main.py import.
-    """
-    return run_cut_inference(
-        cut_dir     = cut_dir,
-        exp_name    = exp_name,
-        dataroot    = input_dataroot,
-        results_dir = results_dir,
-        direction   = direction,
-        device      = device,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -492,8 +427,8 @@ def evaluate_translation(
     game_imgs  = glob.glob(os.path.join(testA, "*.jpg"))
     movie_imgs = glob.glob(os.path.join(testB, "*.jpg"))
 
-    g2m_fakes = run_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "g2m"), "AtoB", device)
-    m2g_fakes = run_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "m2g"), "BtoA", device)
+    g2m_fakes = run_cut_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "g2m"), "AtoB", device)
+    m2g_fakes = run_cut_inference(cut_dir, exp_name, make_inference_dataroot(testA, testB), os.path.join(results_dir, "m2g"), "BtoA", device)
 
     metrics = {
         "game→movie": compute_metrics(testB, os.path.join(results_dir, "g2m", "fake_M"), game_imgs,  g2m_fakes, device),

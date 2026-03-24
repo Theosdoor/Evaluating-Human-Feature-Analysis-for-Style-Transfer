@@ -248,13 +248,14 @@ _FAIL_BG   = (210, 215, 248)   # light red tint    — FAIL cell bg
 _ACCENT    = (160,  80,  30)   # deep blue-teal    — verdict colour
 _OTHERS    = (40,  120, 220)   # orange            — 'others' verdict
 
-# COCO skeleton edges for drawing limbs
-_SKELETON = [
+# COCO skeleton edges for drawing limbs (also used by gcn.py for graph construction)
+COCO_SKELETON = [
     (0, 1), (0, 2), (1, 3), (2, 4),
     (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
     (5, 11), (6, 12), (11, 12),
     (11, 13), (13, 15), (12, 14), (14, 16),
 ]
+_SKELETON = COCO_SKELETON  # local alias kept for draw helpers below
 
 _F   = cv2.FONT_HERSHEY_DUPLEX
 _FT  = cv2.FONT_HERSHEY_PLAIN   # small mono for table cells
@@ -749,6 +750,44 @@ def classify_directory(
 
     print(f"[CLS] Done. {dict((k, v) for k, v in summary.items() if v > 0)}")
     return results, summary
+
+
+# ---------------------------------------------------------------------------
+# Summary persistence
+# ---------------------------------------------------------------------------
+
+def save_classification_summary(
+    save_dir: str,
+    summary: dict,
+    input_dir: str,
+) -> str:
+    """
+    Write a human-readable classification summary to save_dir/_summary.txt.
+
+    Args:
+        save_dir  : classification output directory (e.g. init_classifications/<run>).
+        summary   : dict mapping class name → count (as returned by classify_directory).
+        input_dir : source patch directory (written into the summary for traceability).
+
+    Returns:
+        Path to the written summary file.
+    """
+    import time as _time
+    total = sum(summary.values())
+    os.makedirs(save_dir, exist_ok=True)
+    summary_path = os.path.join(save_dir, "_summary.txt")
+    with open(summary_path, "w") as f:
+        f.write("Rule-based classification summary\n")
+        f.write(f"Save time: {_time.strftime('%Y%m%d-%H%M%S')}\n")
+        f.write(f"Input: {input_dir}\n")
+        f.write(f"Total patches classified: {total}\n\n")
+        f.write(f"{'Class':<25} {'Count':>6}  {'%':>6}\n")
+        f.write("-" * 42 + "\n")
+        for cls, count in sorted(summary.items(), key=lambda x: -x[1]):
+            pct = 100 * count / total if total else 0
+            f.write(f"{cls:<25} {count:>6}  {pct:>5.1f}%\n")
+    print(f"[CLS] Summary saved → {summary_path}")
+    return summary_path
 
 
 # ---------------------------------------------------------------------------
