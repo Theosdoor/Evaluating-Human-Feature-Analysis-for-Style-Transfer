@@ -170,6 +170,13 @@ def _load_dino_model(ckpt_path: str, device: str):
     # Facebook's checkpoint sometimes wraps weights under a 'model' key
     if isinstance(state, dict) and 'model' in state and 'cls_token' not in state:
         state = state['model']
+    # Facebook ViT-B/14 checkpoint stores pos_embed with a CLS slot prepended
+    # [1, 1+N, D], but timm's reg4 variant expects only spatial patches [1, N, D].
+    if 'pos_embed' in state:
+        ckpt_pe = state['pos_embed']          # e.g. [1, 1370, 768]
+        model_pe_shape = model.pos_embed.shape # e.g. [1, 1369, 768]
+        if ckpt_pe.shape[1] == model_pe_shape[1] + 1:
+            state['pos_embed'] = ckpt_pe[:, 1:, :]  # drop leading CLS slot
     model.load_state_dict(state, strict=False)
     model.to(device).eval()
     print(f"[DATA] DINOv2 loaded from {ckpt_path}")
