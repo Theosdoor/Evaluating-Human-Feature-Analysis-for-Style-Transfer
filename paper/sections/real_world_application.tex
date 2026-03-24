@@ -7,6 +7,9 @@
 
 % ============================================================
 \subsection{Image Model Deployment}
+
+
+dfasfasfsd
 % ============================================================
 % TASK: unpaired image-to-image translation on full frames (not patches).
 %       Evaluate in both directions with metrics.
@@ -103,24 +106,24 @@
 %     High LPIPS = lots of style transfer applied, which is expected for
 %     a full-frame model.
 
-\begin{table}[t]
-  \centering
-  \caption{CUT full-frame translation metrics (2.1).
-           FID and KID measure distance from the translated output
-           distribution to the real target-domain distribution (lower
-           = closer to target). LPIPS measures perceptual distance
-           between translated output and the original input frame
-           (lower = less change applied). All metrics: lower is better.}
-  \label{tab:metrics21}
-  \begin{tabular}{lrrr}
-    \toprule
-    Direction & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
-    \midrule
-    Game $\to$ Movie (AtoB) & 234.4 & 0.081 & 0.368 \\
-    Movie $\to$ Game (BtoA) & 143.6 & 0.051 & 0.712 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+% \begin{table}[t]
+%   \centering
+%   \caption{CUT full-frame translation metrics (2.1).
+%            FID and KID measure distance from the translated output
+%            distribution to the real target-domain distribution (lower
+%            = closer to target). LPIPS measures perceptual distance
+%            between translated output and the original input frame
+%            (lower = less change applied). All metrics: lower is better.}
+%   \label{tab:metrics21}
+%   \begin{tabular}{lrrr}
+%     \toprule
+%     Direction & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
+%     \midrule
+%     Game $\to$ Movie (AtoB) & 234.4 & 0.081 & 0.368 \\
+%     Movie $\to$ Game (BtoA) & 143.6 & 0.051 & 0.712 \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
 
 
 % ============================================================
@@ -243,30 +246,30 @@
 %   KEY ARGUMENT: global FID is the wrong metric for local compositing.
 %   The qualitative keyframe comparison is the primary evidence for 2.2.
 
-\begin{table}[t]
-  \centering
-  \caption{Metric comparison between 2.1 (full-frame CUT) and 2.2
-           (patch-level CUT with ST-GCN classification), game$\to$movie
-           direction. FID/KID measure distance to the target domain
-           distribution; LPIPS measures perceptual change vs.\ input.
-           FID favours 2.1 because global FID penalises untranslated
-           background pixels in the local compositing approach of 2.2.}
-  \label{tab:metrics22}
-  \begin{tabular}{lrrr}
-    \toprule
-    Model & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
-    \midrule
-    2.1 Full-frame CUT          & 234.4 & 0.081 & 0.368 \\
-    2.2 Patch CUT + ST-GCN      & 242.5 & 0.093 & \textbf{0.359} \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+% \begin{table}[t]
+%   \centering
+%   \caption{Metric comparison between 2.1 (full-frame CUT) and 2.2
+%            (patch-level CUT with ST-GCN classification), game$\to$movie
+%            direction. FID/KID measure distance to the target domain
+%            distribution; LPIPS measures perceptual change vs.\ input.
+%            FID favours 2.1 because global FID penalises untranslated
+%            background pixels in the local compositing approach of 2.2.}
+%   \label{tab:metrics22}
+%   \begin{tabular}{lrrr}
+%     \toprule
+%     Model & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
+%     \midrule
+%     2.1 Full-frame CUT          & 234.4 & 0.081 & 0.368 \\
+%     2.2 Patch CUT + ST-GCN      & 242.5 & 0.093 & \textbf{0.359} \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\linewidth]{figs/keyframes_comparison.pdf}
-  \caption{Ten key frames from the test video: original (left),
-           2.1 full-frame CUT baseline (centre), and 2.2 patch-level
-           CUT with ST-GCN temporal classification (right).}
-  \label{fig:keyframes}
-\end{figure}
+% \begin{figure}[t]
+%   \centering
+%   \includegraphics[width=\linewidth]{figs/keyframes_comparison.pdf}
+%   \caption{Ten key frames from the test video: original (left),
+%            2.1 full-frame CUT baseline (centre), and 2.2 patch-level
+%            CUT with ST-GCN temporal classification (right).}
+%   \label{fig:keyframes}
+% \end{figure}
