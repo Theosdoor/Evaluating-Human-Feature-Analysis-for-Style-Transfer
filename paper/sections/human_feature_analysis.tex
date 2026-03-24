@@ -135,6 +135,11 @@
 %   \end{tabular}
 % \end{table}
 
+% NOTE (from UMAP analysis): The DINOv2 UMAP (Fig.~\ref{fig:umap}, left) shows
+% all five classes heavily mixed in feature space — no clean separation by
+% appearance alone. This directly motivates GCN over a feature-space kNN or
+% MLP: pose is encoded in skeletal structure, not texture.
+
 
 \subsection{Training Data Selection}
 % ============================================================
@@ -201,3 +206,32 @@
 %            motivates diversity-preserving selection.}
 %   \label{fig:umap}
 % \end{figure}
+
+% ---- UMAP ANALYSIS NOTES (incorporate into prose) ----
+%
+% CLASS VIEW (left panel):
+%   - All 5 classes are heavily mixed in the main cloud — no clean separation
+%     by appearance alone. This confirms that DINOv2 features capture texture/
+%     structure, not pose category; GCN on keypoints is necessary.
+%   - head/shoulder patches (green/red) are somewhat denser in the upper region,
+%     consistent with their distinct texture vs full-body crops.
+%   - Isolated bottom-left cluster and far-right strand: likely unusual crops
+%     (extreme close-ups, partial detections, false positives). Worth inspecting
+%     to confirm the blur/motion filter in feat_extract.py catches them.
+%
+% DOMAIN VIEW (right panel):
+%   - Game (blue) and movie (orange) OVERLAP heavily in the centre. This is
+%     favourable for CUT: a shared visual manifold means the generator doesn't
+%     bridge completely alien distributions. Cite this as empirical support for
+%     the translation feasibility.
+%   - Isolated bottom cluster is predominantly movie (orange) — likely dark/
+%     shadowy scenes from The Godfather or The Sopranos. Confirm these are
+%     included in the training split and not accidentally filtered.
+%   - Right-side strands are predominantly game (blue) — possibly background-
+%     heavy or motion-blurred crops unique to game footage.
+%
+% KEY SENTENCES TO USE IN PROSE (1.3, ~30 words):
+%   "Figure~\ref{fig:umap} shows that game and movie patches occupy a largely
+%    shared DINOv2 embedding space, supporting the feasibility of unpaired
+%    translation. Class labels are not separable by appearance alone (left),
+%    confirming that pose-based classification requires skeletal features."

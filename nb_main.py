@@ -126,19 +126,13 @@ RELOAD_EXTRACT = "20260314-195748"
 #
 # Set RELOAD_GCN to skip re-running inference on already-classified patches.
 RELOAD_GCN = None
-RELOAD_GCN = "20260320-162455"
-# Val accuracy per class (manual annotations, 300 epochs, hidden=128):
-    # full_body_front       52/72  (72.2%)
-    # full_body_back        18/19  (94.7%)
-    # head_shoulder_front   49/75  (65.3%)
-    # head_shoulder_back    19/27  (70.4%)
-    # others                 5/51   (9.8%)
+RELOAD_GCN = "20260324-112637"
 
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None
 
 # -- 2.1 --
-RUN_FINETUNE_21 = False
+RUN_FINETUNE_21 = True
 RUN_TRANSLATE_VIDEO_21 = True
 
 # -- 2.2 --

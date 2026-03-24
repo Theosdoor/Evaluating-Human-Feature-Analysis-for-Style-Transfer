@@ -1,6 +1,6 @@
-downloaded_data
-models
-output
+downloaded_data/
+models/
+output/
 external/
 
 *.err
