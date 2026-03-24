@@ -6,7 +6,7 @@ Human patch extraction pipeline.
 - Stores video_path + frame_num instead of raw frames to avoid memory blowout
 - Computes blur score inline during extraction, before discarding the frame
 - Caches cropped patch in detection dict to eliminate the second video pass in save_patches
-- Per-source temporal gap enforcement in diverse_sampling (O(n) not O(n²))
+- Per-source temporal gap enforcement in diverse_sampling (O(n log k), binary search over selected frames)
 - Frame change detection to skip near-duplicate frames before running YOLO
 - GPU batched YOLO inference: buffers `yolo_batch_size` eligible frames then
   runs a single model call, keeping the 2080 Ti feed efficiently
@@ -232,24 +232,43 @@ def diverse_sampling(detections, target_count=1000, temporal_gap=10):
     """
     Greedy diverse sampling with per-source temporal gap enforcement.
 
-    Works in O(n): tracks last selected frame per video source rather than
-    scanning the full selected set each iteration.
+    Processes detections in score-descending order (caller's responsibility).
+    For each candidate, binary-searches the sorted list of already-selected
+    frame numbers for that source to find the nearest neighbour; rejects the
+    candidate if any previously selected frame is within temporal_gap frames.
 
-    detections should already be sorted by score descending.
+    O(n log k) where k is the number of selected frames per source.
     """
+    import bisect
+
     selected = []
-    last_frame_per_source = {}
+    selected_frames_per_source: dict[str, list[int]] = {}
 
     for det in tqdm(detections, desc="Selecting diverse detections", unit="det"):
         if len(selected) >= target_count:
             break
 
         source = det['video_path']
-        last = last_frame_per_source.get(source, -(temporal_gap + 1))
+        frame = det['frame_num']
+        frames = selected_frames_per_source.get(source)
 
-        if abs(det['frame_num'] - last) >= temporal_gap:
+        if frames is None:
+            # First detection from this source — always accept.
             selected.append(det)
-            last_frame_per_source[source] = det['frame_num']
+            selected_frames_per_source[source] = [frame]
+            continue
+
+        # Binary search: find insertion point and check both neighbours.
+        idx = bisect.bisect_left(frames, frame)
+        too_close = False
+        if idx < len(frames) and abs(frames[idx] - frame) < temporal_gap:
+            too_close = True
+        elif idx > 0 and abs(frames[idx - 1] - frame) < temporal_gap:
+            too_close = True
+
+        if not too_close:
+            selected.append(det)
+            frames.insert(idx, frame)  # maintain sorted order
 
     return selected
 
