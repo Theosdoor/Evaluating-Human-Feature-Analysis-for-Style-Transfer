@@ -70,7 +70,7 @@ The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not h
 \begin{figure}
   \centering
   \includegraphics[width=0.55\linewidth]{figs/q21_failure.pdf}
-  \caption{Failures using the baseline method.}
+  \caption{Game $\to$ movie failures using the baseline method.}
   \label{fig:q21_failure}
 \end{figure}
 
@@ -78,8 +78,25 @@ The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not h
 \begin{figure}
   \centering
   \includegraphics[width=0.55\linewidth]{figs/q21_success.pdf}
-  \caption{Successes using the baseline method.}
+  \caption{Game $\to$ movie successes using the baseline method.}
   \label{fig:q21_success}
+\end{figure}
+
+
+\newpage
+\begin{figure}
+  \centering
+  \includegraphics[width=0.55\linewidth]{figs/m2g_q21_failure.pdf}
+  \caption{Movie $\to$ game failures using the baseline method.}
+  \label{fig:msg_q21_failure}
+\end{figure}
+
+\newpage
+\begin{figure}
+  \centering
+  \includegraphics[width=0.55\linewidth]{figs/m2g_q21_success.pdf}
+  \caption{Movie $\to$ game successes using the baseline method.}
+  \label{fig:m2g_q21_success}
 \end{figure}
 
 % ============================================================
@@ -178,19 +195,29 @@ During test inference, we:
   \item Classify patches using a spatio-temporal extension of the Section 1.2 GCN (ST-GCN, \cite{yan2018stgcn}) over a $T=5$ frame window per tracked person, and discard \texttt{Others} to reduce noise (Table \ref{tab:q22_params}).
   \item Apply the fine-tuned CUT model to the remaining patches.
   \item Resize and paste the translated patches back onto their respective frames. Use a $21\times21$ Gaussian kernel ($\sigma=5$) for feather blending to mitigate obvious seams.
-  \item Apply EMA temporal blending ($\alpha=0.3$) with \texttt{cv2.addWeighted} \cite{opencv_library} between consecutive frames to reduce flicker.
+  \item Apply exponential moving average (EMA) temporal blending ($\alpha=0.3$) with \texttt{cv2.addWeighted} \cite{opencv_library} between consecutive frames to reduce flicker.
 \end{enumerate}
+
+Table \ref{tab:metrics} shows that this method is an overall improvement, producing lower FID, KID and LPIPS scores for both directions. This implies that training the model on geometric features rather than full frames can significantly improve performance. However, without feathering and EMA blending, the FID and KID were much higher because of obvious seams after pasting. These artifacts are still present in Figure \ref{fig:q22_compare}, so improved blending (e.g. pyramid blending) may further improve results.
+
+
 
 
 \newpage
 \begin{figure}
   \centering
   \includegraphics[width=0.9\linewidth]{figs/q22_compare.png}
-  \caption{Comparison between original (left), 2.1 baseline (center) and 2.2 enhanced pipeline (right). In these frames, the enhanced method effectively targets the people in the frames, whereas the baseline method creates a blur with green tinge.}
+  \caption{Game $\to$ movie: comparison between original (left), 2.1 baseline (center) and 2.2 enhanced pipeline (right). In these frames, the enhanced method effectively targets the people in the frames, whereas the baseline method creates a blur with green tinge.}
   \label{fig:q22_compare}
 \end{figure}
 
-
+\newpage
+\begin{figure}
+  \centering
+  \includegraphics[width=0.8\linewidth]{figs/m2g_q22_compare.pdf}
+  \caption{Movie $\to$ game: comparison between original (left), 2.1 baseline (center) and 2.2 enhanced pipeline (right). In these frames, the enhanced method effectively targets the people in the frames, whereas the baseline method creates a blur with green tinge.}
+  \label{fig:m2g_q22_compare}
+\end{figure}
 
 % ============================================================
 % TASK: improve 2.1 using local (patch) methods and/or temporal approaches.
