@@ -68,7 +68,7 @@ def finetune_cut_patches(
     device: str,
     n_epochs: int = 20,
     n_epochs_decay: int = 10,
-) -> str:
+) -> dict:
     """
     Fine-tune a CUT checkpoint on the human patches selected in Q1.3.
 
@@ -89,7 +89,9 @@ def finetune_cut_patches(
         n_epochs_decay    : epochs over which LR decays to zero.
 
     Returns:
-        Path to the staged dataroot (useful for inspection / reuse).
+        Training info dict from finetune_cut (pretrained_exp, n_epochs,
+        n_epochs_decay, load_size, crop_size, batch_size, training_time_s,
+        training_time_human).
     """
     dataroot = os.path.join(save_dir, "patch_dataroot")
     trainA   = os.path.join(dataroot, "trainA")
@@ -115,7 +117,7 @@ def finetune_cut_patches(
     print(f"[ENH] trainA total: {len(glob.glob(os.path.join(trainA, '*.jpg')))}  "
           f"trainB total: {len(glob.glob(os.path.join(trainB, '*.jpg')))}")
 
-    finetune_cut(
+    training_info = finetune_cut(
         cut_dir        = cut_dir,
         pretrained_exp = pretrained_exp,
         finetune_exp   = finetune_exp,
@@ -125,7 +127,7 @@ def finetune_cut_patches(
         n_epochs_decay = n_epochs_decay,
     )
 
-    return dataroot
+    return training_info
 
 
 # ---------------------------------------------------------------------------

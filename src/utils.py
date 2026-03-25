@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import cv2
 from tqdm import tqdm
@@ -321,7 +322,7 @@ def finetune_cut(
     batch_size: int = 1,
     load_size: int = 286,
     crop_size: int = 256,
-) -> None:
+) -> dict:
     """
     Fine-tune a pretrained CUT checkpoint on dataroot and save to a new
     independent experiment directory.
@@ -403,8 +404,22 @@ def finetune_cut(
         cmd.append("--continue_train")
 
     print(f"[CUT] Fine-tuning {finetune_exp} for {n_epochs}+{n_epochs_decay} epochs…")
+    t0 = time.time()
     subprocess.run(cmd, check=True, cwd=cut_dir)
+    training_time_s = time.time() - t0
+
+    training_info = {
+        "pretrained_exp": pretrained_exp,
+        "n_epochs": n_epochs,
+        "n_epochs_decay": n_epochs_decay,
+        "load_size": load_size,
+        "crop_size": crop_size,
+        "batch_size": batch_size,
+        "training_time_s": round(training_time_s),
+        "training_time_human": f"{int(training_time_s // 60)}m {int(training_time_s % 60)}s",
+    }
     # Write completion marker so future runs skip re-training.
     with open(done_flag, "w") as _f:
         _f.write(f"n_epochs={n_epochs} n_epochs_decay={n_epochs_decay}\n")
-    print(f"[CUT] Fine-tuning complete → checkpoints/{finetune_exp}/")
+    print(f"[CUT] Fine-tuning complete in {training_info['training_time_human']} → checkpoints/{finetune_exp}/")
+    return training_info

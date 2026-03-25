@@ -414,6 +414,7 @@ def evaluate_translation(
     out_dir: str,
     device: str,
     tag: str,
+    config: dict | None = None,
 ) -> dict:
     """
     Run inference, metrics, and visualisations for both translation directions.
@@ -429,6 +430,8 @@ def evaluate_translation(
         out_dir  : output root (e.g. output/q2_1/ or output/q2_2/).
         device   : "cuda" | "cpu".
         tag      : label used in print output and figure titles (e.g. "2.1").
+        config   : optional dict of hyperparameters/training info to save
+                   alongside metrics in viz/summary.json.
 
     Returns:
         metrics dict {"game→movie": {...}, "movie→game": {...}}
@@ -462,6 +465,9 @@ def evaluate_translation(
     os.makedirs(viz_dir, exist_ok=True)
     with open(os.path.join(viz_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)
+    summary = {"metrics": metrics, "config": config or {}}
+    with open(os.path.join(viz_dir, "summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
 
     save_comparison_grid(game_imgs,  g2m_fakes, f"game → movie ({tag})", os.path.join(viz_dir, "comparison_g2m.png"))
     save_comparison_grid(movie_imgs, m2g_fakes, f"movie → game ({tag})", os.path.join(viz_dir, "comparison_m2g.png"))

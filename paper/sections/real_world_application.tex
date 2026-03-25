@@ -9,7 +9,33 @@
 \subsection{Image Model Deployment}
 
 
-dfasfasfsd
+
+\begin{table}[t]
+  \centering
+  \caption{Experimental setup shared by both 2.1 (full-frame CUT) and 2.2
+           (patch-level CUT). Training data differs: 2.1 uses 500 full frames
+           per domain; 2.2 uses human patches selected in Section~1.3.
+           Training time was measured on the NCC HPC cluster.}
+  \label{tab:setup}
+  \small
+  \begin{tabular}{ll}
+    \toprule
+    Hyperparameter & Value \\
+    \midrule
+    Pretrained weights   & horse2zebra CUT~\cite{park2020} \\
+    Constant-LR epochs   & 4 \\
+    LR-decay epochs      & 1 \\
+    Batch size           & 1 \\
+    Load size            & $286 \times 286$ \\
+    Crop size            & $256 \times 256$ \\
+    Learning rate        & $2 \times 10^{-4}$ (Adam, $\beta_1=0.5$) \\
+    GPU                  & NVIDIA GeForce RTX 2080 Ti \\
+    Training time (2.1)  & \textasciitilde{}X min \\
+    Training time (2.2)  & \textasciitilde{}X min \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
 % ============================================================
 % TASK: unpaired image-to-image translation on full frames (not patches).
 %       Evaluate in both directions with metrics.

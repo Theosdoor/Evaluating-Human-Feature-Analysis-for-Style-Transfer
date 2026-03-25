@@ -2,6 +2,8 @@
 # ACV CSWK 2026 - Main Notebook
 
 # %%
+import glob
+import json
 import os
 import sys
 import subprocess
@@ -108,8 +110,8 @@ if PRETRAINED_MODEL not in PRETRAINED_MODELS:
 FULLFRAME_MODEL  = "cut_finetuned_fullframe"   # 2.1: fine-tuned on full frames
 PATCH_MODEL      = "cut_finetuned_patches"      # 2.2: fine-tuned on 1.3 patches
 
-N_EPOCHS_FINETUNE = 5
-N_EPOCHS_DECAY    = 3
+N_EPOCHS_FINETUNE = 4
+N_EPOCHS_DECAY    = 1
 
 # %%
 # Which parts of pipeline to run?
@@ -133,11 +135,11 @@ RELOAD_TRAIN_SELECT = None
 RELOAD_TRAIN_SELECT = "20260325-105918"
 
 # -- 2.1 --
-RUN_FINETUNE_21 = False
+RUN_FINETUNE_21 = True
 RUN_TRANSLATE_VIDEO_21 = True
 
 # -- 2.2 --
-RUN_FINETUNE_22 = False
+RUN_FINETUNE_22 = True
 RUN_TRANSLATE_VIDEO_22 = True
 
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
@@ -215,13 +217,11 @@ else:
 #     python scripts/train_gcn.py --help
 
 # %%
-import glob as _glob
-
 gcn_save_path = os.path.join(SAVE_DIR, "gcn_results", reload_gcn or SAVE_NAME)
 
 # Locate latest committed GCN checkpoint (checkpoints/gcn_model_<run>.pt).
 # Override by setting GCN_PRETRAINED_CKPT to a specific path.
-_ckpt_candidates = sorted(_glob.glob(os.path.join(PROJECT_ROOT, "checkpoints", "gcn_model_*.pt")))
+_ckpt_candidates = sorted(glob.glob(os.path.join(PROJECT_ROOT, "checkpoints", "gcn_model_*.pt")))
 GCN_PRETRAINED_CKPT = _ckpt_candidates[-1] if _ckpt_candidates else None
 
 if reload_gcn:
@@ -296,13 +296,20 @@ if RUN_FINETUNE_21 or RUN_FINETUNE_22:
 if RUN_FINETUNE_21:
     # Fine-tune from pretrained weights — produces FULLFRAME_MODEL checkpoint
     # (copies PRETRAINED_MODEL first, so original weights are never modified)
-    finetune_cut(
+    training_info_21 = finetune_cut(
         cut_dir, PRETRAINED_MODEL, FULLFRAME_MODEL, frame_dataroot, DEVICE,
         n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
     )
 
+    config_21 = {
+        **training_info_21,
+        "n_train_game":  len(glob.glob(os.path.join(trainA, "*.jpg"))),
+        "n_train_movie": len(glob.glob(os.path.join(trainB, "*.jpg"))),
+        "gpu": "NVIDIA GeForce RTX 2080 Ti",
+    }
+
     # Evaluate in both directions
-    metrics_2_1 = evaluate_translation(cut_dir, FULLFRAME_MODEL, testA, testB, q2_1_dir, DEVICE, tag="2.1")
+    metrics_2_1 = evaluate_translation(cut_dir, FULLFRAME_MODEL, testA, testB, q2_1_dir, DEVICE, tag="2.1", config=config_21)
 
     if RUN_TRANSLATE_VIDEO_21:
         baseline_video = translate_test_video(cut_dir, FULLFRAME_MODEL, TEST_PATH, q2_1_dir, DEVICE)
@@ -333,15 +340,25 @@ if RUN_FINETUNE_22:
     yolo_model.to(DEVICE)
 
     # Fine-tune from the same pretrained base as 2.1 — produces PATCH_MODEL checkpoint
-    finetune_cut_patches(
+    training_info_22 = finetune_cut_patches(
         cut_dir, PRETRAINED_MODEL, PATCH_MODEL,
         train_game, train_movie,
         q2_2_dir, DEVICE,
         n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
     )
 
+    config_22 = {
+        **training_info_22,
+        "n_train_game":  len(train_game),
+        "n_train_movie": len(train_movie),
+        "gpu": "NVIDIA GeForce RTX 2080 Ti",
+        "blend_alpha": 0.3,
+        "feather_px": 10,
+        "patch_size": 256,
+    }
+
     # Evaluate patch model in both directions using same test splits as 2.1
-    metrics_2_2 = evaluate_translation(cut_dir, PATCH_MODEL, testA, testB, q2_2_dir, DEVICE, tag="2.2")
+    metrics_2_2 = evaluate_translation(cut_dir, PATCH_MODEL, testA, testB, q2_2_dir, DEVICE, tag="2.2", config=config_22)
 
     # Translate test video with patch-level compositing + GCN filtering + temporal blending
     if RUN_TRANSLATE_VIDEO_22:
@@ -362,4 +379,12 @@ if RUN_FINETUNE_22:
             device=DEVICE,
         )
         print(f"[2.2] Bbox FID: {bbox_fid_22:.4f}")
+
+        # Append bbox_fid to the summary saved by evaluate_translation
+        _summary_path = os.path.join(q2_2_dir, "viz", "summary.json")
+        with open(_summary_path) as _f:
+            _summary = json.load(_f)
+        _summary["bbox_fid"] = bbox_fid_22
+        with open(_summary_path, "w") as _f:
+            json.dump(_summary, _f, indent=2)
  
