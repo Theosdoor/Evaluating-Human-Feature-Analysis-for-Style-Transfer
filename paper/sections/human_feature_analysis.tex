@@ -29,42 +29,20 @@ Candidate patches are scored by a weighted combination of detection confidence, 
 %
 % FIGURES:
 %
-%   Fig 1b (optional, fits in same figure with subcaption) —
-%             Histogram of detection scores (before/after selection).
+%   Fig 1a — Histogram of detection scores (before/after selection).
 %             Source: output/extracted_humans/20260314-195748/_summary.txt
 %             Save to: paper/figs/score_hist.pdf
 %             Caption: "Score distribution of raw detections (grey) vs selected (blue)."
 %             This gives you empirical justification for the scoring in ≤1 sentence.
 %
-% SUBMIT 50 IMAGES in submit/ folder, using a script to randomly sample
 
 
 \subsection{Classification}
 
-We classify patches using a 3-layer Graph Convolutional Network (GCN) \cite{kipf2017semisupervisedclassificationgraphconvolutional, Yan_Xiong_Lin_2018} on COCO \cite{lin2015microsoft} skeleton graphs with node features $(x, y, \text{confidence})$, and  confidence-weighted global pooling \cite{confidenceweightedpooling}.
-We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints for the skeletons.
-
-
-
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=\linewidth]{figs/annotation_tool.png}
-  \caption{Custom tool for manual annotation of extracted patches. In this screenshot, the user is prompted to accept a rule-based heuristic classification or reclassify.}
-  \label{fig:gcn_curves}
-\end{figure}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=\linewidth]{figs/gcn_training_curves.png}
-  \caption{GCN training and validation curves.}
-  \label{fig:gcn_curves}
-\end{figure}
-
 \begin{table}[h]
   \centering
   \caption{GCN result on the entire dataset: patch distribution across classes. \texttt{No pose} means that the pose model didn't detect anything, which is kept seperate from \texttt{Others} to improve GCN performance on \texttt{Others}.}
-  \label{tab:gcn_distribution}
+  \label{tab:gcn_results}
   \begin{tabular}{lrr}
     \toprule
     Class & Count & \% \\
@@ -80,6 +58,26 @@ We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints 
     \bottomrule
   \end{tabular}
 \end{table}
+
+We classify patches using a 3-layer Graph Convolutional Network (GCN) \cite{kipf2017semisupervisedclassificationgraphconvolutional, Yan_Xiong_Lin_2018} on COCO \cite{lin2015microsoft} skeleton graphs with node features $(x, y, \text{confidence})$, and  confidence-weighted global pooling \cite{confidenceweightedpooling}.
+We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints for the skeletons.
+Table \ref{tab:gcn_results} shows the results.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figs/annotation_tool.png}
+  \caption{Custom tool for manual annotation of extracted patches. In this screenshot, the user is prompted to accept a rule-based heuristic classification or reclassify.}
+  \label{fig:annot_tool}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figs/gcn_training_curves.png}
+  \caption{Final GCN training and validation curves using manual annotations.}
+  \label{fig:gcn_curves}
+\end{figure}
+
+
 
 \begin{table}[h]
   \centering
@@ -98,7 +96,8 @@ We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints 
   \end{tabular}
 \end{table}
 
-
+GCN training labels are manually annotated using a custom tool (Figure \ref{fig:annot_tool}) seeded with rule-based keypoint heurstics (Table \ref{}).
+Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the training set without requiring additional annotations.
 
 % ============================================================
 % TASK: classify 1.1 patches into 5 classes, submit 20/class.
@@ -109,12 +108,6 @@ We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints 
 %     "We define full-body as both hip keypoints visible with torso,
 %      head-and-shoulder as upper body only, front/back by nose
 %      visibility, and others for partial/occluded/non-human crops."
-%   Sentence 2-3: method.
-%     "We detect 17-point COCO keypoints with YOLOv8-pose [CITE],
-%      then train a 3-layer Graph Convolutional Network (GCN)~\cite{kipf2017}
-%      on the COCO skeleton graph with node features (x, y, confidence).
-%      Confidence-weighted global pooling aggregates per-node embeddings
-%      to a graph-level vector for 5-class classification."
 %   Sentence 4: labels.
 %     "Training labels are obtained from manual annotation of \(\sim\)600
 %      patches using a custom Flask tool seeded with rule-based keypoint
@@ -139,35 +132,6 @@ We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints 
 %     (no consistent pose signature), so low recall is expected.
 %     Mitigation in 2.2: hard threshold on keypoint count.
 %
-% FIGURES:
-%
-%   Fig 2b — GCN training curves (loss + accuracy over epochs).
-%             Source: output/gcn_results/20260320-162455/training_curves.png
-%             Copy to: paper/figs/gcn_training_curves.png
-%             Caption: "GCN training and validation curves."
-%
-%   Table 1 — Per-class val accuracy (already in _summary.txt).
-%             Present as a small table. Excluded from word count.
-%             Columns: Class | Correct | Total | Accuracy (%)
-%
-% LATEX SKELETON:
-% \begin{table}[t]
-%   \centering
-%   \caption{GCN per-class validation accuracy.}
-%   \label{tab:gcn}
-%   \begin{tabular}{lrrr}
-%     \toprule
-%     Class & Correct & Total & Acc.\ (\%) \\
-%     \midrule
-%     Full-body front    & 52 & 72  & 72.2 \\
-%     Full-body back     & 18 & 19  & 94.7 \\
-%     Head-shoulder front& 49 & 75  & 65.3 \\
-%     Head-shoulder back & 19 & 27  & 70.4 \\
-%     Others             &  5 & 51  &  9.8 \\
-%     \bottomrule
-%   \end{tabular}
-% \end{table}
-
 % NOTE (from UMAP analysis): The DINOv2 UMAP (Fig.~\ref{fig:umap}, left) shows
 % all five classes heavily mixed in feature space — no clean separation by
 % appearance alone. This directly motivates GCN over a feature-space kNN or
