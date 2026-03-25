@@ -374,9 +374,16 @@ def select_with_dino_clustering(
     selected_game:  list[str] = []
     selected_movie: list[str] = []
 
-    print(f"[DATA] Selecting ~{total_budget} representatives via K-Means:")
+    # Budget split equally between domains so CUT sees balanced A/B sets
+    domain_budget = total_budget // 2
+    domain_totals: dict[str, int] = {}
     for (cls, dom), paths in sorted_groups:
-        k      = max(1, round(total_budget * len(paths) / total_patches))
+        domain_totals[dom] = domain_totals.get(dom, 0) + len(paths)
+
+    print(f"[DATA] Selecting ~{domain_budget} per domain via K-Means (equal A/B split):")
+    for (cls, dom), paths in sorted_groups:
+        dom_total = domain_totals.get(dom, 1)
+        k      = max(1, round(domain_budget * len(paths) / dom_total))
         idxs   = [path_to_idx[p] for p in paths]
         chosen = _cluster_select(paths, all_embs[idxs], k=k, seed=seed)
         print(f"[DATA]   {cls:<25} {dom:<7}  {len(paths):>4} → {len(chosen):>3}")
@@ -385,7 +392,8 @@ def select_with_dino_clustering(
         else:
             selected_movie.extend(chosen)
 
-    print(f"[DATA] Total selected: {len(selected_game)} game  {len(selected_movie)} movie")
+    print(f"[DATA] Total selected: {len(selected_game)} game  {len(selected_movie)} movie  "
+          f"(target {domain_budget} each)")
 
     if umap_save_path:
         labels  = [cls for (cls, dom), paths in sorted_groups for _ in paths]

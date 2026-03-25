@@ -130,7 +130,7 @@ RELOAD_GCN = "20260325-095859_ablation_manual"
 
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None
-RELOAD_TRAIN_SELECT = "20260325-103914"
+RELOAD_TRAIN_SELECT = "20260325-105918"
 
 # -- 2.1 --
 RUN_FINETUNE_21 = False
@@ -283,14 +283,15 @@ q2_1_dir = os.path.join(SAVE_DIR, "q2_1", SAVE_NAME)
 
 ensure_pretrained_models(cut_dir)
 
-# Build full-frame dataset — always run (testA/testB also needed by 2.2 evaluate)
-frame_dataroot = os.path.join(q2_1_dir, "cut_data")
-trainA, trainB, testA, testB = build_frame_dataset(
-    selected_detections,
-    [d["path"] for d in TRAIN_DATA],
-    frame_dataroot,
-    n_per_domain=500,
-)
+if RUN_FINETUNE_21 or RUN_FINETUNE_22:
+    # Build full-frame dataset — always run (testA/testB also needed by 2.2 evaluate)
+    frame_dataroot = os.path.join(q2_1_dir, "cut_data")
+    trainA, trainB, testA, testB = build_frame_dataset(
+        selected_detections,
+        [d["path"] for d in TRAIN_DATA],
+        frame_dataroot,
+        n_per_domain=500,
+    )
 
 if RUN_FINETUNE_21:
     # Fine-tune from pretrained weights — produces FULLFRAME_MODEL checkpoint
