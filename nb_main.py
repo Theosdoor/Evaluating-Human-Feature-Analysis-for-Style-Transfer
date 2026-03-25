@@ -112,6 +112,7 @@ PATCH_MODEL      = "cut_finetuned_patches"      # 2.2: fine-tuned on 1.3 patches
 
 N_EPOCHS_FINETUNE = 4
 N_EPOCHS_DECAY    = 1
+BATCH_SIZE        = 4
 
 # %%
 # Which parts of pipeline to run?
@@ -299,6 +300,7 @@ if RUN_FINETUNE_21:
     training_info_21 = finetune_cut(
         cut_dir, PRETRAINED_MODEL, FULLFRAME_MODEL, frame_dataroot, DEVICE,
         n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
+        batch_size=BATCH_SIZE,
     )
 
     config_21 = {
@@ -345,6 +347,7 @@ if RUN_FINETUNE_22:
         train_game, train_movie,
         q2_2_dir, DEVICE,
         n_epochs=N_EPOCHS_FINETUNE, n_epochs_decay=N_EPOCHS_DECAY,
+        batch_size=BATCH_SIZE,
     )
 
     config_22 = {
