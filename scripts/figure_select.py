@@ -205,6 +205,24 @@ def make_grid(
 # Selection state
 # ---------------------------------------------------------------------------
 
+def _save_grid_pdf(grid: np.ndarray, path: str) -> None:
+    """Save a BGR numpy grid as a PDF via matplotlib (lossless, LaTeX-ready)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    rgb = cv2.cvtColor(grid, cv2.COLOR_BGR2RGB)
+    h, w = rgb.shape[:2]
+    dpi = 150
+    fig, ax = plt.subplots(figsize=(w / dpi, h / dpi), dpi=dpi)
+    ax.imshow(rgb)
+    ax.axis("off")
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fig.savefig(path, format="pdf", bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+
+
 class SelectionState:
     def __init__(
         self,
@@ -333,8 +351,8 @@ class SelectionState:
                 print(f"[figsel] Skip {name}: no selections")
                 continue
             grid = make_grid(groups, cell_w=cw, cell_h=ch)
-            path = os.path.join(self.out_dir, f"{name}.png")
-            cv2.imwrite(path, grid)
+            path = os.path.join(self.out_dir, f"{name}.pdf")
+            _save_grid_pdf(grid, path)
             print(f"[figsel] Saved {path}  ({len(groups)} rows)")
             results[name] = path
 
