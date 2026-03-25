@@ -21,10 +21,10 @@ N_11 = 50
 DIR_11 = "output/extracted_humans/20260324-185427"
 
 N_12 = 20  # per class (5 classes)
-DIR_12 = "output/gcn_results/20260324-195802_manual"
+DIR_12 = "output/gcn_results/20260325-095859_ablation_manual"
 
 N_13 = 50
-DIR_13 = "output/train_select/20260324-195936"
+DIR_13 = "output/train_select/20260325-105918"
 
 SEED = 42
 
