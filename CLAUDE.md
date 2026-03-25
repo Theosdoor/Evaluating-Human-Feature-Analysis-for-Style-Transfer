@@ -210,6 +210,8 @@ make -C paper clean    # wipe artefacts
 
 Always build after editing `.tex` files to catch errors. Do **not** commit `paper/build/`.
 
+Use **British spelling** throughout (normalisation, prioritise, colour, analyse, etc.). The project `.vscode/settings.json` sets `cSpell.language` to `en-GB`.
+
 **Word limits (examiners stop reading at the limit):**
 
 | Section | Max words |

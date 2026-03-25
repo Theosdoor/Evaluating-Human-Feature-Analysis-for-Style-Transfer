@@ -11,11 +11,26 @@
 
 We use \texttt{YOLO26m} \cite{yolo26_ultralytics} to detect and extract 4000 human patches from the training videos: 2000 for each domain (game/movie). 
 Longer videos should be more diverse, so this budget is split proportional to length, so longer videos represent more of the dataset. 
-To prioritise diverse patches, we reject frames with inter-frame mean absolute difference below \(\tau_{sc}=8\) (near-static shots), and enforce a minimum spacing of 10 frames between YOLO calls.
+To prioritise diverse patches, we reject near-static frames and enforce a minimum spacing between YOLO calls (Table~\ref{tab:extract_params}).
 
 \begin{table}[h]
   \centering
-  \caption{Composite patch quality score components. Maximum achievable score is 0.75; sharpness is normalised per-source (film vs.\ game) against a blur threshold $\tau$.}
+  \caption{Extraction hyperparameters (empirically chosen).}
+  \label{tab:extract_params}
+  \begin{tabular}{lrp{6cm}}
+    \toprule
+    Parameter & Value & Role \\
+    \midrule
+    \texttt{yolo\_interval}, $\delta_f$            & 10 frames & minimum spacing between YOLO calls \\
+    \texttt{scene\_change\_threshold}, $\tau_{sc}$ & 8         & minimum inter-frame MAD; rejects near-static shots \\
+    \texttt{blur\_threshold}, $\tau$               & 40        & Laplacian normalisation denominator \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering
+  \caption{Composite patch quality score components. Maximum achievable score is 0.75; sharpness is normalised against $\tau$ (Table~\ref{tab:extract_params}).}
   \label{tab:score_weights}
   \begin{tabular}{llr}
     \toprule
@@ -28,22 +43,22 @@ To prioritise diverse patches, we reject frames with inter-frame mean absolute d
   \end{tabular}
 \end{table}
 
-% figure 
+% figure
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.6\linewidth]{figs/score_histogram.pdf}
-  \caption{Distribution of composite quality scores for the 3,687 selected patches. Scores combine YOLO detection confidence, relative patch size, and Laplacian sharpness (weights in Table~\ref{tab:score_weights}). The selected mean (0.50) lies above the mean of all 10,156 raw detections (0.43), suggesting that the scoring criterion prioritises selecting sharper, well-sized, high-confidence crops.}
+  \caption{Distribution of composite quality scores for the 3,687 selected patches. Scores combine YOLO detection confidence, relative patch size, and Laplacian sharpness (weights in Table~\ref{tab:score_weights}). The selected mean (0.50) lies above the mean of all 10,156 raw detections (0.43), suggesting that the scoring criterion prioritises sharper, well-sized, high-confidence crops.}
   \label{fig:score_hist}
 \end{figure}
 
-Candidate patches are scored as in Table \ref{tab:score_weights}, and Figure \ref{fig:score_hist} shows the results. Greedy diversity sampling then enforces a 10-frame temporal gap per video source. Hyperparameters were empirically chosen.
+Candidate patches are scored as in Table~\ref{tab:score_weights}, and Figure~\ref{fig:score_hist} shows the results. Greedy diversity sampling enforces a $\delta_f$-frame temporal gap per video source.
 
 
 \subsection{Classification}
 
 \begin{table}[h]
   \centering
-  \caption{GCN result on the entire dataset: patch distribution across classes. \texttt{No pose} means that the pose model didn't detect anything, which is kept seperate from \texttt{Others} to improve GCN performance on \texttt{Others}.}
+  \caption{GCN result on the entire dataset: patch distribution across classes. \texttt{No pose} means that the pose model didn't detect anything, which is kept separate from \texttt{Others} to improve GCN performance on \texttt{Others}.}
   \label{tab:gcn_results}
   \begin{tabular}{lrr}
     \toprule
@@ -61,9 +76,9 @@ Candidate patches are scored as in Table \ref{tab:score_weights}, and Figure \re
   \end{tabular}
 \end{table}
 
-We classify patches using a 3-layer Graph Convolutional Network (GCN) \cite{kipf2017semisupervisedclassificationgraphconvolutional, Yan_Xiong_Lin_2018} on COCO \cite{lin2015microsoft} skeleton graphs with node features $(x, y, \text{confidence})$, and  confidence-weighted global pooling \cite{confidenceweightedpooling}.
+We classify patches using a 3-layer Graph Convolutional Network (GCN) \cite{kipf2017semisupervisedclassificationgraphconvolutional, Yan_Xiong_Lin_2018} on COCO \cite{lin2015microsoft} skeleton graphs with node features $(x, y, \text{confidence})$, and confidence-weighted global pooling \cite{confidenceweightedpooling}.
 We use \texttt{YOLO26m-pose} \cite{yolo26_ultralytics} to detect pose keypoints for the skeletons.
-Table \ref{tab:gcn_results} shows the results.
+Table~\ref{tab:gcn_results} shows the results.
 
 \begin{figure}[h]
   \centering
@@ -83,7 +98,7 @@ Table \ref{tab:gcn_results} shows the results.
 
 \begin{table}[h]
   \centering
-  \caption{GCN per-class validation accuracy on the manually annotated validation set. Poor performance on \texttt{Others} is expected, because the class contains every detected pose that does not fit into the other 4 classes and is therefore very heterogenous, so the model struggles to learn patterns.}
+  \caption{GCN per-class validation accuracy on the manually annotated validation set. Poor performance on \texttt{Others} is expected, because the class contains every detected pose that does not fit into the other 4 classes and is therefore very heterogeneous, so the model struggles to learn patterns.}
   \label{tab:gcn_accuracy}
   \begin{tabular}{lrrr}
     \toprule
@@ -127,7 +142,7 @@ Table \ref{tab:gcn_results} shows the results.
   \end{tabular}
 \end{table}
 
-GCN training labels are manually annotated using a custom tool (Figure \ref{fig:annot_tool}) seeded with rule-based keypoint heuristics (Table \ref{tab:rules}).
+GCN training labels are manually annotated using a custom tool (Figure \ref{fig:annot_tool}) seeded with rule-based keypoint heuristics (Table~\ref{tab:rules}).
 
 TODO - reference the figures and talk about rule vs manual annot
 Figure \ref{fig:gcn_ablation}
