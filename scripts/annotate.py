@@ -15,7 +15,7 @@ Speed optimisations
 
 Usage
 -----
-    python3 scripts/annotate.py --cls-dir output/init_classifications/20260324-185427
+    python3 scripts/annotate.py --cls-dir output/init_classifications/20260324-185427-1
     # open http://localhost:5000
 
     Optional:

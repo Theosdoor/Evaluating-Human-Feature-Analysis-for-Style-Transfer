@@ -42,8 +42,7 @@ Usage
 python3 scripts/figure_select.py --q21-orig-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/real_A --q21-fake-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/fake_B
 
 2.2
-python3 scripts/figure_select.py --q22-orig-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/real_A --q22-21-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/fake_B --q22-22-dir output/q2_2/20260325-142517/enh_frames
-
+python3 scripts/figure_select.py --q22-orig-dir output/q2_2/20260325-140715/test_frames --q22-21-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/fake_B --q22-22-dir output/q2_2/20260325-142517/enh_frames
 
 """
 
