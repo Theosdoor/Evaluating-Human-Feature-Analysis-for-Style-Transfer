@@ -1060,10 +1060,13 @@ def plot_annotation_ablation(
         ax=ax,
     )
 
-    # Annotate bars with value
-    for bar in ax.patches:
-        h = bar.get_height()
-        if not (h != h):   # skip NaN bars
+    # Annotate bars with value.
+    # Use ax.containers (not ax.patches) to avoid labelling seaborn legend patches.
+    for container in ax.containers:
+        for bar in container:
+            h = bar.get_height()
+            if h != h or h == 0:   # skip NaN and zero-height bars
+                continue
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
                 h + 0.8,
