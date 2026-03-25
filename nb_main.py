@@ -130,14 +130,14 @@ RELOAD_GCN = "20260325-095859_ablation_manual"
 
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None
-RELOAD_TRAIN_SELECT = "20260324-195936"
+RELOAD_TRAIN_SELECT = "20260325-103914"
 
 # -- 2.1 --
 RUN_FINETUNE_21 = False
 RUN_TRANSLATE_VIDEO_21 = True
 
 # -- 2.2 --
-RUN_FINETUNE_22 = True
+RUN_FINETUNE_22 = False
 RUN_TRANSLATE_VIDEO_22 = True
 
 # Effective reload controls (RUN_FULL_PIPELINE overrides per-stage reload flags)
