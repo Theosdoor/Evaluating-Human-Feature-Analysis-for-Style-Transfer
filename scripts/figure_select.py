@@ -308,19 +308,21 @@ class SelectionState:
         results = {}
 
         sel21 = self._sel.get("q21", {})
+        n21 = len(self.pairs_21)
         success_pairs = [
             self.pairs_21[int(i)] for i, v in sorted(sel21.items(), key=lambda x: int(x[0]))
-            if v == "success"
+            if v == "success" and int(i) < n21
         ][:TARGET_21]
         failure_pairs = [
             self.pairs_21[int(i)] for i, v in sorted(sel21.items(), key=lambda x: int(x[0]))
-            if v == "failure"
+            if v == "failure" and int(i) < n21
         ][:TARGET_21]
 
         sel22 = self._sel.get("q22", {})
+        n22 = len(self.triples_22)
         selected_triples = [
             self.triples_22[int(i)] for i, v in sorted(sel22.items(), key=lambda x: int(x[0]))
-            if v == "selected"
+            if v == "selected" and int(i) < n22
         ][:TARGET_22]
 
         for name, groups, cw, ch in [
