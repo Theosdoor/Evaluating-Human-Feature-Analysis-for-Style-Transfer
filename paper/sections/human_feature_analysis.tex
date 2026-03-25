@@ -12,7 +12,22 @@
 We use \texttt{YOLO26m} \cite{yolo26_ultralytics} to detect and extract 4000 human patches from the training videos: 2000 for each domain (game/movie). 
 Longer videos should be more diverse, so this budget is split proportional to length, so longer videos represent more of the dataset. 
 To prioritise diverse patches, we reject frames with inter-frame mean absolute difference below \(\tau_{sc}=8\) (near-static shots), and enforce a minimum spacing of 10 frames between YOLO calls.
-Candidate patches are scored by a weighted combination of detection confidence, relative bounding-box area (maximum 15\% of frame) and Laplacian sharpness. Greedy diversity sampling then enforces a 10-frame temporal gap per video source. Hyperparameters were empirically chosen.
+Candidate patches are scored by a weighted combination of detection confidence, relative bounding-box area and Laplacian sharpness (Table~\ref{tab:score_weights}). Greedy diversity sampling then enforces a 10-frame temporal gap per video source. Hyperparameters were empirically chosen.
+
+\begin{table}[h]
+  \centering
+  \caption{Composite patch quality score components. Maximum achievable score is 0.75; sharpness is normalised per-source (film vs.\ game) against a blur threshold $\tau$.}
+  \label{tab:score_weights}
+  \begin{tabular}{llr}
+    \toprule
+    Component & Formula & Weight \\
+    \midrule
+    YOLO confidence & $c \in [0,1]$ & 0.30 \\
+    Relative size & soft peak at 15\% of frame area & 0.25 \\
+    Laplacian sharpness & $\min(\text{blur}\,/\,3\tau,\;1)$ & 0.20 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 [REMOVE THE GREEDY DIV SAMPLING? ITS CURRENTLY BROKEN BUT DON"T REALLY NEED IT]
 % ============================================================
 % TASK: adapt DL detection, propose lightweight useful-frame selection,
@@ -28,13 +43,7 @@ Candidate patches are scored by a weighted combination of detection confidence, 
 %   - Quote the blur score range from _summary.txt: min 0.6, max 5351.5
 %
 % FIGURES:
-%
-%   Fig 1a — Histogram of detection scores (before/after selection).
-%             Source: output/extracted_humans/20260314-195748/_summary.txt
-%             Save to: paper/figs/score_hist.pdf
-%             Caption: "Score distribution of raw detections (grey) vs selected (blue)."
-%             This gives you empirical justification for the scoring in ≤1 sentence.
-%
+
 
 
 \subsection{Classification}
