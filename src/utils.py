@@ -373,21 +373,6 @@ def finetune_cut(
             f"Run ensure_pretrained_models() first."
         )
 
-    # Skip re-training if we already completed the full schedule.
-    done_flag = os.path.join(dst_ckpt_dir, "training_done.flag")
-    if os.path.isfile(done_flag):
-        print(f"[CUT] {finetune_exp} already fully trained (found training_done.flag), skipping.")
-        return {
-            "pretrained_exp":    pretrained_exp,
-            "n_epochs":          n_epochs,
-            "n_epochs_decay":    n_epochs_decay,
-            "load_size":         load_size,
-            "crop_size":         crop_size,
-            "batch_size":        batch_size,
-            "training_time_s":   0,
-            "training_time_human": "0m 0s (cached)",
-        }
-
     # Copy pretrained weights to the new experiment directory so training
     # resumes from that base without touching the originals.
     if not os.path.isdir(dst_ckpt_dir):
@@ -440,8 +425,5 @@ def finetune_cut(
         "training_time_s": round(training_time_s),
         "training_time_human": f"{int(training_time_s // 60)}m {int(training_time_s % 60)}s",
     }
-    # Write completion marker so future runs skip re-training.
-    with open(done_flag, "w") as _f:
-        _f.write(f"n_epochs={n_epochs} n_epochs_decay={n_epochs_decay}\n")
     print(f"[CUT] Fine-tuning complete in {training_info['training_time_human']} → checkpoints/{finetune_exp}/")
     return training_info

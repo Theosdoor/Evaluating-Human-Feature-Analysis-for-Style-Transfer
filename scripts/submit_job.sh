@@ -18,19 +18,4 @@ python3 -c "import torch; print(f'CUDA Available: {torch.cuda.is_available()}');
 echo "------------------------------------------------------"
 
 # Run the experiments
-# python scripts/train_gcn.py \
-#     --extract-dir output/extracted_humans/20260324-185427 \
-#     --label-source manual \
-#     --annotations output/manual_annotated/20260324-185427-1
-# python scripts/train_gcn.py \
-#         --extract-dir  output/extracted_humans/20260324-185427 \
-#         --label-source rule \
-#         --pose-model   models/yolo26m-pose.pt 
-
-# python scripts/train_gcn.py --ablation \
-#     --extract-dir  output/extracted_humans/20260324-185427 \
-#     --init-cls-dir output/init_classifications/20260324-185427-1 \
-#     --pose-model   models/yolo26m-pose.pt
-# python3 nb_main.py
-# python3 scripts/nb_figures.py
-python3 scripts/run_m2g_inference.py
+python3 nb_main.py
