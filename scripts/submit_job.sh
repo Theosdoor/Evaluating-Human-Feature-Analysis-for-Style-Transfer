@@ -25,4 +25,9 @@ echo "------------------------------------------------------"
 #         --extract-dir  output/extracted_humans/20260324-185427 \
 #         --label-source rule \
 #         --pose-model   models/yolo26m-pose.pt 
+
+# python scripts/train_gcn.py --ablation \
+#     --extract-dir  output/extracted_humans/20260324-185427 \
+#     --init-cls-dir output/init_classifications/20260324-185427-1 \
+#     --pose-model   models/yolo26m-pose.pt
 python3 nb_main.py
