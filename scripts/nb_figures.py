@@ -100,7 +100,7 @@ plt.show()
 # ---------------------------------------------------------------------------
 
 RUN_ID         = "20260325-105918"
-CLASSIFY_RUN_ID = "20260325-105918-1"  # classification dir for "all patches" view
+CLASSIFY_RUN_ID = "20260324-185427-1"  # classification dir for "all patches" view
 
 cls_order  = [c for c in CLASSES if c != "others"] + ["others"]
 PALETTE    = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#aaaaaa"]
@@ -118,6 +118,9 @@ def _b64(path, size=(128, 128), quality=65):
 
 def _build_umap_html(all_paths, labels, domains, title, run_id):
     """Embed, UMAP-project, and return a self-contained interactive HTML string."""
+    if not all_paths:
+        print(f"[WARN] No patches found for '{title}' — skipping.")
+        return None
     model = _load_dino_model(str(DINO_CKPT), DEVICE)
     embs  = _embed_patches(all_paths, model, DEVICE)
     del model
@@ -222,9 +225,10 @@ print(f"Selected: {len(game_paths)} game + {len(movie_paths)} movie patches")
 
 html = _build_umap_html(sel_paths, sel_labels, sel_domains,
                         f"DINOv2 patch embeddings — selected ({RUN_ID})", RUN_ID)
-out_path = FIGURES_DIR / f"dino_umap_{RUN_ID}_selected.html"
-out_path.write_text(html)
-print(f"Saved: {out_path}")
+if html:
+    out_path = FIGURES_DIR / f"dino_umap_{RUN_ID}_selected.html"
+    out_path.write_text(html)
+    print(f"Saved: {out_path}")
 
 # %%
 # ---------------------------------------------------------------------------
@@ -243,8 +247,9 @@ print(f"All patches: {len(all_paths)} from {CLASSIFY_RUN_ID}")
 
 html = _build_umap_html(all_paths, all_labels, all_domains,
                         f"DINOv2 patch embeddings — all patches ({CLASSIFY_RUN_ID})", CLASSIFY_RUN_ID)
-out_path = FIGURES_DIR / f"dino_umap_{CLASSIFY_RUN_ID}_all.html"
-out_path.write_text(html)
-print(f"Saved: {out_path}")
+if html:
+    out_path = FIGURES_DIR / f"dino_umap_{CLASSIFY_RUN_ID}_all.html"
+    out_path.write_text(html)
+    print(f"Saved: {out_path}")
 
 # %%
