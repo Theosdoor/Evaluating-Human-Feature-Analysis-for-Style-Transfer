@@ -176,8 +176,15 @@ Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the tra
 
 \subsection{Training Data Selection}
 
+Despite the lightweight algorithm in Section 1.1, many patches were visually similar. For useful training data, we select visually diverse patches as follows:
 
-\cite{oquab2023dinov2, darcet2023vitneedreg, jose2024dinov2meetstextunified}.
+\begin{enumerate}
+    \item Embed all non-\texttt{others} patches with DINOv2 ViT-B/14 \cite{oquab2023dinov2, darcet2023vitneedreg, jose2024dinov2meetstextunified}, a pre-trained vision transformer that captures high-level semantic similarity better than pixel-level hashing.
+    \item Apply K-Means within each class\,$\times$\,domain group. The 2,000-patch budget is split equally between domains (1,000 each) to balance CUT's unpaired inputs; within each domain, $k \propto$ class-group size.
+    \item Select the patch nearest each centroid by cosine distance, choosing the most representative example per visual cluster.
+\end{enumerate}
+
+Figure~\ref{fig:umap} shows that game and movie patches occupy a largely shared DINOv2 embedding space, supporting the feasibility of unpaired translation. Class labels are not separable by appearance alone (left panel), confirming that pose-based classification requires skeletal features.
 
 \begin{figure}[h]
   \centering
@@ -192,12 +199,6 @@ Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the tra
 %       Own observations/insights required. Submit 50 samples. 100 words.
 %
 % SUGGESTED STRUCTURE:
-%   Sentence 1: observation / motivation.
-%     "Inspection of extracted patches reveals substantial visual
-%      redundancy: consecutive frames of the same shot produce
-%      near-identical crops. Training CUT~\cite{park2020} on such
-%      data risks overfitting the generator to specific shot compositions
-%      rather than learning a domain-level style."
 %   Sentence 2-3: method.
 %     "We embed all non-`others' patches with DINOv2 ViT-B/14~\cite{oquab2023}
 %      and apply K-Means independently within each class\,\(\times\)\,domain
