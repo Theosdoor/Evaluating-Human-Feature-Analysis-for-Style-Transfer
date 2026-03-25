@@ -96,7 +96,36 @@ Table \ref{tab:gcn_results} shows the results.
   \end{tabular}
 \end{table}
 
-GCN training labels are manually annotated using a custom tool (Figure \ref{fig:annot_tool}) seeded with rule-based keypoint heurstics (Table \ref{}).
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figs/gcn_annotation_ablation.png}
+  \caption{Per-class GCN validation accuracy when trained on rule-based vs.\ manually annotated labels.}
+  \label{fig:gcn_ablation}
+\end{figure}
+
+\begin{table}[h]
+  \centering
+  \caption{Rule-based heuristics used to seed manual annotation, applied sequentially.
+           Thresholds: $\tau_f{=}0.30$ (face), $\tau_n{=}0.25$ (nose-back), $\tau_b{=}0.10$ (eye-back), $\tau_{\text{bd}}{=}0.20$ (body).}
+  \label{tab:rules}
+  \begin{tabular}{lll}
+    \toprule
+    Step & Condition & Outcome \\
+    \midrule
+    \multirow{3}{*}{Orientation}
+      & nose, l\_eye, r\_eye $\geq \tau_f$                              & front \\
+      & nose $< \tau_n$, eyes visible (conf $\geq \tau_b$) $\leq 1$    & back  \\
+      & otherwise                                                        & \textit{others} \\
+    \midrule
+    \multirow{3}{*}{Extent}
+      & ankles $\geq 1$ or $\geq 3$ lower kps (conf $\geq \tau_{\text{bd}}$), $h/w \geq 1.5$ & full-body \\
+      & $\geq 1$ shoulder visible (conf $\geq \tau_{\text{bd}}$)                               & head-shoulder \\
+      & otherwise                                                                               & \textit{others} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+GCN training labels are manually annotated using a custom tool (Figure \ref{fig:annot_tool}) seeded with rule-based keypoint heuristics (Table \ref{tab:rules}).
 Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the training set without requiring additional annotations.
 
 % ============================================================
