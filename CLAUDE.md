@@ -41,8 +41,6 @@ python3 nb_main.py                  # run the full pipeline
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 ```
 
-**WandB:** copy `.env.example` → `.env` and set `WANDB_API_KEY` / `WANDB_PROJECT`.
-
 **Slurm (HPC):** partition `ug-gpu-small`, `--gres=gpu:turing:1`, 5 h, 28 GB RAM. Edit the last block of the target script before submitting. GPU used: **NVIDIA GeForce RTX 2080 Ti** (NCC HPC cluster). Always cite this in the report.
 
 ---
@@ -54,27 +52,33 @@ ACV_cswk/
 ├── nb_main.py                  # Main pipeline orchestrator (submit as .ipynb)
 ├── src/
 │   ├── feat_extract.py         # Q1.1 — extract human patches from video
-│   ├── classification.py       # Q1.2 — pose-based classifier (5 classes)
-│   ├── data.py                 # Q1.3 — stratified train/val data selection
+│   ├── classification.py       # Q1.2 — rule-based pose classifier (5 classes)
+│   ├── gcn.py                  # Q1.2 extension — PoseGCN classifier
+│   ├── stgcn.py                # Q2.2 extension — spatio-temporal GCN (ST-GCN)
+│   ├── data.py                 # Q1.3 — DINOv2 + K-Means stratified selection
 │   ├── baseline_model.py       # Q2.1 — CUT fine-tune on full frames
 │   ├── enhanced_model.py       # Q2.2 — patch-level compositing + temporal blend
-│   ├── gcn.py                  # GCN classifier (used in Q2.2 inference)
 │   └── utils.py                # Shared: video I/O, CUT wrapper, dir naming
 ├── scripts/
+│   ├── train_gcn.py            # Offline GCN training (run on HPC)
 │   ├── annotate.py             # Flask annotation tool for manual labelling
-│   ├── debug_viz.py            # Debug visualisation helpers
+│   ├── figure_select.py        # Interactive figure selection for paper
+│   ├── nb_figures.py           # Generate notebook figures
+│   ├── run_m2g_inference.py    # Re-run CUT inference in movie→game direction
+│   ├── sample4submit.py        # Extract sample images for submission
 │   └── install_externals.sh    # Download DINOv2 + clone CUT fork
 ├── paper/                      # LaTeX report (NeurIPS 2025 format)
 │   ├── main.tex
 │   ├── Makefile
 │   ├── ref.bib
 │   ├── sections/
-│   │   ├── intro.tex
-│   │   ├── human_feature_analysis.tex
-│   │   └── real_world_application.tex
+│   │   ├── human_feature_analysis.tex   # Q1.x sections
+│   │   └── real_world_application.tex   # Q2.x sections
 │   └── figs/                   # Figures for paper (PDF/PNG preferred)
 ├── external/
 │   └── contrastive-unpaired-translation/   # Forked CUT repo (uv workspace member)
+├── checkpoints/                # GCN model checkpoints (gcn_model_<run>.pt)
+├── models/                     # YOLO and DINOv2 weights
 ├── downloaded_data/            # Videos — NOT committed
 │   ├── Train/game/MafiaVideogame.mp4
 │   ├── Train/movie/{TheGodfather,TheIrishman,TheSopranos}.mp4
@@ -93,27 +97,32 @@ ACV_cswk/
 ## Source Modules
 
 ### `src/feat_extract.py` — Q1.1
-Extracts human patches from video frames using YOLO detection. Scores patches by blur (Laplacian variance) and motion (frame difference). Outputs crops with metadata to `output/extracted_humans/<timestamp>/`.
+Extracts human patches from video frames using YOLO detection. Scores patches by blur (Laplacian variance) and motion (frame difference). Key functions: `extract_humans_from_video()`, `score_detection()`, `diverse_sampling()`, `save_patches()`, `reload_extracted_patches()`. Outputs crops with metadata to `output/extracted_humans/<timestamp>/`.
 
 ### `src/classification.py` — Q1.2
-Classifies extracted patches into 5 pose categories using MediaPipe/COCO keypoints + a lightweight MLP/SVM head. Produces per-class subdirectories and diagnostic renders. Uses `ClassifierConfig` dataclass for configuration.
+Rule-based classifier: maps COCO keypoint geometry into 5 pose categories (`full_body_front`, `full_body_back`, `head_shoulder_front`, `head_shoulder_back`, `others`). Produces per-class subdirectories, diagnostic renders, and keypoint cache files (`_keypoints.npz`). Uses `ClassifierConfig` dataclass. Key functions: `classify_keypoints()`, `classify_directory()`, `reload_classification_results()`.
 
 ### `src/gcn.py` — GCN classifier
-`PoseGCN` model using `torch-geometric`. Uses COCO skeleton adjacency graph (`NUM_NODES`, `LOWER_KPS`, `CLASSES` constants). Trained with per-class validation; used in Q2.2 for inference-time patch classification.
+`PoseGCN` model using `torch-geometric`. Uses COCO skeleton adjacency graph (`NUM_NODES=17`, `LOWER_KPS`, `CLASSES` constants). Trained offline via `scripts/train_gcn.py`; checkpoint loaded at inference time. Key functions: `run_gcn_pipeline()`, `run_gcn_inference_pretrained()`, `keypoints_to_graph()`.
+
+### `src/stgcn.py` — ST-GCN (Q2.2 extension)
+
+Extends GCN to temporal windows using spatio-temporal graphs (T=5 frames). Includes a lightweight IoU-based tracker (no external SORT needed). Used in `enhanced_model.py` to filter patches per-track before CUT translation. Key functions: `run_stgcn_inference()`, `assign_track_ids()`, `build_st_edge_index()`, `sequence_to_stgraph()`.
 
 ### `src/data.py` — Q1.3
-Stratified train/val split across both class and domain (game vs. movie). Outputs split manifests for CUT training.
+Stratified patch selection using DINOv2 ViT-B/14 embeddings + K-Means clustering. Selects `TRAIN_SELECT_BUDGET=2000` patches balanced across class and domain. Saves UMAP visualisation to `figures/dino_umap.png`. Key functions: `select_with_dino_clustering()`, `get_data_split()`, `save_train_split()`, `load_train_split()`. Outputs: `output/train_select/<SAVE_NAME>/train_split.json`.
 
 ### `src/baseline_model.py` — Q2.1
-Fine-tunes the CUT model on full frames. Wraps CUT as a subprocess via `src/utils.py`. Evaluates with FID, KID, and LPIPS via `cleanfid` and `lpips` libraries.
+Fine-tunes CUT on full frames extracted at detection timestamps. Evaluates with FID, KID, and LPIPS via `cleanfid` and `lpips` libraries. Optionally translates the full test video. Key functions: `build_frame_dataset()`, `run_q2_1()`, `evaluate_translation()`, `ensure_pretrained_models()`.
 
 ### `src/enhanced_model.py` — Q2.2
-Fine-tunes CUT on selected patches. Composites translated patches back onto source frames and applies EMA temporal blending across frames for video consistency.
+Fine-tunes CUT on 1.3-selected patches. At inference: detects humans every frame (no scene-skip), filters with GCN or ST-GCN, translates kept crops with CUT, composites back with Gaussian feathering (`feather_px=10`) and EMA temporal blending (`blend_alpha=0.3`). Computes bbox-level FID on human patches only. Key functions: `run_q2_2()`, `finetune_cut_patches()`, `translate_test_video_enhanced()`, `compute_bbox_fid()`.
 
 ### `src/utils.py`
-- `run_cut(...)` — subprocess wrapper for CUT training/inference
+
+- `run_cut_inference(...)` / `finetune_cut(...)` — subprocess wrappers for CUT
 - `get_next_reclassify_dir(base)` — **always use this** for new classification output dirs (never reimplement suffix logic)
-- Video I/O helpers, timestamped directory creation
+- `extract_video_frames()`, `write_video()` — video I/O helpers
 
 ---
 
@@ -128,7 +137,8 @@ Fine-tunes CUT on selected patches. Composites translated patches back onto sour
 | 1.1 extraction | `output/extracted_humans/<SAVE_NAME>/` |
 | 1.2 rule-based classification | `output/init_classifications/<SAVE_NAME>-<N>/` (via `get_next_reclassify_dir`) |
 | 1.2 manual annotations | `output/manual_annotated/<SAVE_NAME>/annotations.json` |
-| 1.2 GCN training | `output/gcn_results/<SAVE_NAME>/` |
+| 1.2 GCN inference | `output/gcn_results/<SAVE_NAME>/` |
+| 1.3 data selection | `output/train_select/<SAVE_NAME>/train_split.json` |
 | 2.1 full-frame model | `output/q2_1/<SAVE_NAME>/` |
 | 2.2 enhanced model | `output/q2_2/<SAVE_NAME>/` |
 
@@ -146,6 +156,7 @@ All modules prefix log lines with bracketed tags:
 | `[EXTRACT]` | feat_extract.py |
 | `[CLS]` | classification.py |
 | `[GCN]` | gcn.py |
+| `[STGCN]` | stgcn.py |
 | `[CUT]` | utils.py (CUT subprocess wrapper) |
 | `[VIDEO]` | utils.py (video I/O helpers) |
 | `[DATA]` | data.py |
@@ -234,7 +245,7 @@ Figures go in `paper/figs/`; reference with relative paths (e.g. `figs/my_fig.pd
 ## What NOT to Do
 
 - Do **not** edit files in `cswk_notes/`
-- Do **not** commit `downloaded_data/`, `output/`, `wandb/`, or `paper/build/`
+- Do **not** commit `downloaded_data/`, `output/`, or `paper/build/`
 - Do **not** reimplement the suffix-increment logic for classification dirs — use `get_next_reclassify_dir`
 - Do **not** push `.mp4` files or model checkpoints
 - Do **not** modify `paper/neurips_2025.sty`
