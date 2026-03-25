@@ -126,7 +126,7 @@ RELOAD_EXTRACT = "20260324-185427"
 #
 # Set RELOAD_GCN to skip re-running inference on already-classified patches.
 RELOAD_GCN = None
-RELOAD_GCN = "20260324-195802_manual"
+RELOAD_GCN = "20260325-095859_ablation_manual"
 
 # -- 1.3 --
 RELOAD_TRAIN_SELECT = None
