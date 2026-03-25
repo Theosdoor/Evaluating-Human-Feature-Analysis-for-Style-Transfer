@@ -12,7 +12,7 @@
 
 \begin{table}[t]
   \centering
-  \caption{Experimental setup shared by both 2.1 (full-frame CUT) and 2.2
+  \caption{Finetuning setup shared by both 2.1 (full-frame CUT) and 2.2
            (patch-level CUT). Training data differs: 2.1 uses 500 full frames
            per domain; 2.2 uses human patches selected in Section~1.3.
            Training time was measured on the NCC HPC cluster.}
@@ -22,7 +22,7 @@
     \toprule
     Hyperparameter & Value \\
     \midrule
-    Pretrained weights   & horse2zebra CUT~\cite{park2020} \\
+    Pretrained weights   & horse2zebra CUT~\cite{park2020cut} \\
     Constant-LR epochs   & 4 \\
     LR-decay epochs      & 1 \\
     Batch size           & 4 \\
