@@ -25,6 +25,8 @@
     Crop size            & $256 \times 256$ \\
     Learning rate        & $2 \times 10^{-4}$ (Adam, $\beta_1=0.5$) \\
     GPU                  & NVIDIA GeForce RTX 2080 Ti \\
+    Training time (2.1)  & 13m 4s \\
+    Training time (2.2)  & 30m 10s \\
     Frames per domain    & 1000 \\
     \bottomrule
   \end{tabular}
@@ -54,15 +56,13 @@
   \end{tabular}
 \end{table}
 
-For our baseline, we use a pre-trained \texttt{horse2zebra} Contrastive Unpaired Translation (CUT) model \cite{park2020cut} (see \url{https://github.com/taesungp/contrastive-unpaired-translation}), and fine-tune it on full frames from the training videos (1000 frames per domain; 2000 in total). The experimental setup is shown in Table \ref{tab:setup}. CUT uses multilayer, patchwise contrastive loss which is more effective than cycle consistency loss (e.g. CycleGAN \cite{CycleGAN2017, isola2017image}), and CUT has only one generator and one discriminator which makes it $\sim$50\% more efficient than CycleGAN \cite{park2020cut}.
+For our baseline, we use a pre-trained \texttt{horse2zebra} Contrastive Unpaired Translation (CUT) model \cite{park2020cut}, and fine-tune it on full frames from the training videos (1000 frames per domain; 2000 in total). The experimental setup is shown in Table \ref{tab:setup}. CUT uses multilayer, patchwise contrastive loss which is more effective than cycle consistency loss (e.g. CycleGAN \cite{CycleGAN2017, isola2017image}), and CUT has only one generator and one discriminator which makes it $\sim$50\% more efficient than CycleGAN \cite{park2020cut}.
 
 Table \ref{tab:metrics} shows FID, KID \cite{parmar2021cleanfid} and LPIPS \cite{zhang2018perceptual} for both translation directions. Movie $\to$ game translation performs worse for FID (271.3 vs 239.4) and KID (0.105 vs 0.085), which suggests that the opposite direction may be easier to learn, but the better LPIPS score (0.286 vs 0.391) suggests that the model more aggressively restyles in the game $\to$ movie direction.
 
-Figures \ref{fig:q21_failure} and \ref{fig:q21_success} show that game $\to$ movie transfer results in heavy blurring and a green tinge, which may be an artifact from the \texttt{horse2zebra} initialisation.
+Figures \ref{fig:q21_failure} and \ref{fig:q21_success} show that game $\to$ movie transfer results in heavy blurring and a green tinge, which may be an artifact from the \texttt{horse2zebra} initialisation. However, movie $\to$ game style transfer sometimes works well (Figure \ref{fig:m2g_q21_success}) but occasionally fails or incorrectly distorts the image (Figure \ref{fig:msg_q21_failure}).
 
-[190 words - add more on visual results + movie!]
-
-The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not humans, which is a large domain gap. Results with 5 epochs of fine-tuning are okay (no zebra stripes!), but longer fine-tuning on a more appropriate pre-trained base may improve results.
+The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not humans, which is a large domain gap. Results are plausible for 5 epochs of fine-tuning (no zebra stripes!), but longer fine-tuning on a more appropriate pre-trained base may improve results.
 
 
 
@@ -87,7 +87,7 @@ The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not h
 \begin{figure}
   \centering
   \includegraphics[width=0.55\linewidth]{figs/m2g_q21_failure.pdf}
-  \caption{Movie $\to$ game failures using the baseline method.}
+  \caption{Movie $\to$ game failures using the baseline method. The frames are distorted and not game-like.}
   \label{fig:msg_q21_failure}
 \end{figure}
 
@@ -95,74 +95,9 @@ The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not h
 \begin{figure}
   \centering
   \includegraphics[width=0.55\linewidth]{figs/m2g_q21_success.pdf}
-  \caption{Movie $\to$ game successes using the baseline method.}
+  \caption{Movie $\to$ game successes using the baseline method. The frames gain a sepia tint as seen in the Mafia videogame training videos.}
   \label{fig:m2g_q21_success}
 \end{figure}
-
-% ============================================================
-% TASK: unpaired image-to-image translation on full frames (not patches).
-%       Evaluate in both directions with metrics.
-%       ≥10 success + ≥10 failure comparisons. 250 words.
-%
-% SUGGESTED STRUCTURE:
-%
-%   [Success cases] ~60 words
-%     "Figure~\ref{fig:21_success} shows 10 successful translations.
-%      The model consistently transfers film-grain texture and colour
-%      grading to game frames, particularly for well-lit frontal shots
-%      with clear clothing texture. [Add 1-2 specific visual observations
-%      from your actual results, e.g., colour shift, grain, contrast.]"
-%
-%   [Failure cases] ~60 words
-%     "Figure~\ref{fig:21_fail} shows 10 failure cases.
-%      Common failures include: (1) background style leaking onto
-%      foreground where YOLO bounding boxes were imprecise; (2) colour
-%      artefacts on dark game scenes with low texture information;
-%      (3) temporal inconsistency visible across consecutive frames
-%      as the model has no inter-frame memory."
-%
-% KEY THINGS TO STATE:
-%   - Hardware used and training time (explicitly required for marks)
-%   - Both translation directions evaluated
-%   - Why these metrics (FID = global distribution, LPIPS = local perceptual)
-%   - Honest failure analysis (domain gap from horse2zebra, no temporal coherence)
-%
-% FIGURES:
-%   Fig 4 — Metrics table.
-%            Columns: Direction | FID ↓ | KID ↓ | LPIPS ↓
-%            Rows: AtoB (game→movie), BtoA (movie→game)
-%            Save to: paper/figs/ (as a LaTeX table, not image)
-%
-%   Fig 5 — Success cases: 2×5 or 5×2 grid, input|output pairs.
-%            Pick 10 frames where the style transfer looks convincing.
-%            From: output/q2_1/cut_data/testA/ (input)
-%                  output/q2_1/<run>/fake_M/ (output)
-%            Save to: paper/figs/success_21.pdf
-%            Caption: "Successful game-to-movie translations (CUT, 2.1).
-%                      Left: input game frame. Right: translated output."
-%
-%   Fig 6 — Failure cases: same format, 10 bad examples.
-%            Save to: paper/figs/fail_21.pdf
-%            Caption: "Failure cases: [describe 2-3 specific failure modes]."
-%
-% RESULTS (actual):
-%   game→movie: FID=234.4, KID=0.081, LPIPS=0.368
-%   movie→game: FID=143.6, KID=0.051, LPIPS=0.712
-%
-%   Interpretation:
-%   - FID/KID measure distance from output distribution to TARGET domain
-%     (lower = output looks more like the target). NOT compared to input.
-%   - movie→game (BtoA) scores better on FID/KID: mapping diverse movie
-%     textures to the more uniform game rendering is an easier task.
-%   - game→movie (AtoB) is harder: constrained flat-shaded game palette
-%     → varied, grain-heavy cinematic style is a larger domain gap.
-%   - LPIPS is perceptual distance vs INPUT. High movie→game LPIPS (0.712)
-%     means the full-frame CUT aggressively restyled the entire frame.
-%     High LPIPS = lots of style transfer applied, which is expected for
-%     a full-frame model.
-
-
-
 
 % ============================================================
 \subsection{Local (Temporal) Enhancement}
@@ -198,10 +133,10 @@ During test inference, we:
   \item Apply exponential moving average (EMA) temporal blending ($\alpha=0.3$) with \texttt{cv2.addWeighted} \cite{opencv_library} between consecutive frames to reduce flicker.
 \end{enumerate}
 
-Table \ref{tab:metrics} shows that this method is an overall improvement, producing lower FID, KID and LPIPS scores for both directions. This implies that training the model on geometric features rather than full frames can significantly improve performance. However, without feathering and EMA blending, the FID and KID were much higher because of obvious seams after pasting. These artifacts are still present in Figure \ref{fig:q22_compare}, so improved blending (e.g. pyramid blending) may further improve results.
+Table \ref{tab:metrics} shows that this method is an overall improvement, producing lower FID, KID and LPIPS scores for both directions. This implies that patch-level training significantly improves performance over full-frame training. Without feathering and EMA blending, the FID and KID were much higher because of obvious seams after pasting. These artifacts are still present in Figure \ref{fig:q22_compare}, so improved blending (e.g. pyramid blending) may further improve results.
 
-
-
+However, Figure \ref{fig:m2g_q22_compare} shows that the enhanced method mostly failed to learn any movie $\to$ game transfer, and sometimes the baseline looks better. 
+This may be because there are 3 different movies (compared to 1 game), and more epochs are needed to learn the distribution.
 
 \newpage
 \begin{figure}
@@ -215,100 +150,11 @@ Table \ref{tab:metrics} shows that this method is an overall improvement, produc
 \begin{figure}
   \centering
   \includegraphics[width=0.8\linewidth]{figs/m2g_q22_compare.pdf}
-  \caption{Movie $\to$ game: comparison between original (left), 2.1 baseline (center) and 2.2 enhanced pipeline (right). In these frames, the enhanced method effectively targets the people in the frames, whereas the baseline method creates a blur with green tinge.}
+  \caption{Movie $\to$ game: comparison between original (left), 2.1 baseline (center) and 2.2 enhanced pipeline (right). In these frames, the baseline generally increases contrast and adds a sepia tinge, whereas the enhanced method looks very similar to the original, suggesting it has failed to learn movie $\to$ game style transfer. Although the baseline sometimes distorts the images, it arguably performs better than the enhanced method here.}
   \label{fig:m2g_q22_compare}
 \end{figure}
 
 % ============================================================
-% TASK: improve 2.1 using local (patch) methods and/or temporal approaches.
-%       Submit enhanced video. ≥10 key-frame comparisons. 250 words.
-%
-% SUGGESTED STRUCTURE:
-%
-%   [Motivation] ~40 words
-%     "The 2.1 model applies style transfer to full frames, mixing
-%      foreground human style with background. We address this with
-%      patch-level compositing: translating only detected human regions
-%      and compositing them onto the original frame."
-%
-%   [Method overview] ~90 words
-%     "For each test frame: (1) YOLO detects human bounding boxes;
-%      (2) the 1.2 GCN classifies each patch, discarding `others`;
-%      (3) kept crops are translated by a CUT model fine-tuned on the
-%      1.3-selected patches (game: 1000, movie: 1000 patches); (4) translated
-%      crops are resized to original bbox dimensions and composited onto
-%      the untranslated frame via a spatially feathered mask — a
-%      10-pixel ramp produced by Gaussian-blurring (kernel 21$\times$21,
-%      $\sigma = 5$) a binary interior mask, blending the translated crop
-%      against the original frame at all bbox edges;
-%      (5) exponential moving average (EMA) temporal blending
-%      (\(\alpha=0.3\)) reduces inter-frame flicker."
-%
-%   [Why patch fine-tuning helps] ~40 words
-%     "Fine-tuning on human patches (vs.\ full frames) aligns the
-%      generator's training distribution with the inference distribution:
-%      the model sees the same crop scale and content at both train and
-%      test time, reducing identity mapping artefacts."
-%
-%   [Evaluation — metrics] ~40 words
-%     "Table~\ref{tab:metrics} compares 2.1 and 2.2 in both directions.
-%      Global FID decreases significantly (e.g. 239.4→186.3 for game→movie)
-%      because 2.2 cleanly translates foreground humans while leaving the
-%      background artifact-free, unlike 2.1. LPIPS also improves
-%      (e.g. 0.391→0.317), reflecting that background pixels are exactly
-%      retained from the input, and human regions undergo more accurate
-%      patch-scale style transfer."
-%
-%   [Key-frame comparison] ~30 words
-%     "Figure~\ref{fig:keyframes} shows 10 key frames: original,
-%      2.1 baseline, and 2.2 enhanced.  The patch compositing
-%      preserves background fidelity while improving human-region
-%      style consistency."
-%
-%   [Critical evaluation / failure analysis] ~60 words
-%     "Remaining failure modes: (1) GCN misclassification of `others'
-%      (9.8\% val accuracy) causes occasional style transfer on
-%      non-human regions; (2) EMA blending introduces ghosting on fast
-%      motion; (3) the 10-pixel Gaussian feather (kernel $21\times21$,
-%      $\sigma=5$) mitigates bbox boundary artefacts but a visible seam
-%      can persist when the translated crop colour differs strongly from
-%      the adjacent background; (4) the horse2zebra pretrained base
-%      still limits stylistic range."
-%
-% KEY THINGS TO STATE:
-%   - Hardware: NVIDIA GeForce RTX 2080 Ti (NCC HPC cluster) — state this explicitly
-%   - Training time for patch fine-tuning (check slurm logs for wall time)
-%   - Explicit comparison to 2.1 (this is the main point)
-%   - Both videos submitted (baseline 2.1 and enhanced 2.2)
-%   - Honest failure analysis — the marker rewards critical thinking
-%
-% FIGURES:
-%   Fig 7 — Metrics comparison table (2.1 vs 2.2).
-%            Columns: Model | FID ↓ | KID ↓ | LPIPS ↓
-%            Rows: 2.1 Full-frame CUT, 2.2 Patch CUT + EMA
-%
-%   Fig 8 — Key-frame comparison (≥10 frames required).
-%            Three-column layout: Original | 2.1 Baseline | 2.2 Enhanced
-%            Extract representative frames from:
-%              output/q2_1/<run>/enhanced_video_21.mp4 (2.1)
-%              output/q2_2/<run>/enhanced_model.mp4   (2.2)
-%            Save individual frames as: paper/figs/kf_XX_orig.jpg etc.
-%            or use a script to make a contact sheet.
-%            Caption: "Key frame comparisons: original (left),
-%                      2.1 full-frame CUT (centre), 2.2 patch-level
-%                      CUT + EMA blending (right)."
-%            Save to: paper/figs/keyframes_comparison.pdf
-%
-%   Fig 9 (optional but strong) — Patch compositing diagram.
-%            Annotated figure showing:
-%              (a) original frame with YOLO boxes drawn
-%              (b) extracted patches
-%              (c) translated patches
-%              (d) composited result
-%            Save to: paper/figs/compositing_pipeline.pdf
-%            This is a diagram so word-count exempt and tells the story
-%            of 2.2 at a glance.
-%
 % RESULTS (actual) — game→movie direction:
 %   2.1 full-frame:  FID=239.4, KID=0.085, LPIPS=0.391
 %   2.2 patch+ST-GCN: FID=186.3, KID=0.063, LPIPS=0.317
@@ -317,29 +163,6 @@ Table \ref{tab:metrics} shows that this method is an overall improvement, produc
 %   2.1 full-frame:  FID=271.3, KID=0.105, LPIPS=0.286
 %   2.2 patch+ST-GCN: FID=201.5, KID=0.083, LPIPS=0.271
 %
-% INTERPRETATION FOR WRITE-UP:
-%   FID/KID FAVOUR 2.2 STRONGLY.
-%   Using patch-level CUT + ST-GCN significantly improves FID and KID
-%   in both directions. While 2.2 only translates human patches and leaves
-%   the background unchanged, the baseline 2.1 heavily corrupted the
-%   frames with green tinges and artifacts (as seen in Figure 2).
-%   Therefore, the 2.2 method actually brings the overall distribution
-%   much closer to the target domain by cleanly restyling foregrounds
-%   and preserving crisp, artifact-free backgrounds.
-%
-%   LPIPS TELLS A SIMILAR STORY:
-%   LPIPS decreases for both directions in 2.2. A lower LPIPS vs the input
-%   largely reflects that the background (the majority of the frame's pixels)
-%   remains mathematically identical to the source image, leading to a
-%   much smaller perceptual distance than the full-frame model which
-%   restyles every pixel. However, it also signifies more precise style transfer
-%   on the humans themselves with fewer global distortions.
-%
-%   KEY ARGUMENT: Local patch compositing (2.2) achieves superior fidelity
-%   because it prevents the generator from hallucinating or severely distorting
-%   the background, avoiding the heavy color shifts (green tinge) seen in 2.1.
-%   The metrics are robustly better across the board.
-
 
 
 % \begin{figure}[t]

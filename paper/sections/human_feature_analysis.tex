@@ -9,7 +9,7 @@
 % ============================================================
 \subsection{Human Patch Extraction}
 
-We use \texttt{YOLO26m} \cite{yolo26_ultralytics} to detect and extract 4000 human patches from the training videos: 2000 for each domain (game/movie). 
+We use \texttt{YOLO26m} \cite{yolo26_ultralytics} to detect and extract 4000 human patches from the training videos.
 The budget is divided equally between domains (2,000 each); within the movie domain it is allocated proportional to video duration so that longer clips contribute more patches. 
 To prioritise diverse patches, we reject near-static frames and enforce a minimum spacing between YOLO calls (Table~\ref{tab:extract_params}).
 
@@ -21,7 +21,7 @@ To prioritise diverse patches, we reject near-static frames and enforce a minimu
     \toprule
     Parameter & Value & Role \\
     \midrule
-    \texttt{yolo\_interval}, $\delta_f$            & 10 frames & minimum spacing between YOLO calls \\
+    \texttt{yolo\_interval}, $\delta_f$            & 10 & minimum frames between YOLO calls \\
     \texttt{scene\_change\_threshold}, $\tau_{sc}$ & 8         & minimum inter-frame MAD; rejects near-static shots \\
     \texttt{blur\_threshold}, $\tau$               & 40        & Laplacian blur floor; normalised as $\min(\text{blur}/3\tau,\,1)$ \\
     \bottomrule
@@ -142,129 +142,29 @@ Table~\ref{tab:gcn_results} shows the results.
   \end{tabular}
 \end{table}
 
-GCN training labels are manually annotated using a custom tool (Figure \ref{fig:annot_tool}) seeded with rule-based keypoint heuristics (Table~\ref{tab:rules}).
+GCN training labels are manually annotated using a custom tool (Figure \ref{fig:annot_tool}) seeded with rule-based keypoint heuristics (Table~\ref{tab:rules}), which are less flexible than the learned GCN classifier. Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the GCN training set without requiring additional annotations.
 
-TODO - reference the figures and talk about rule vs manual annot
-Figure \ref{fig:gcn_ablation}
-...
-
-Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the training set without requiring additional annotations.
-
-% ============================================================
-% TASK: classify 1.1 patches into 5 classes, submit 20/class.
-%       Explain, justify, evaluate. 100 words.
-%
-
-%
-% KEY THINGS TO JUSTIFY:
-%   - Why GCN over MLP/SVM? Pose is a graph structure — edges encode
-%     skeletal connectivity; a GCN naturally propagates joint context.
-%   - Why confidence-weighted pooling? Low-confidence keypoints
-%     (occluded joints) should contribute less to the graph embedding.
-%   - Why manual annotations? Rule-based heuristics misclassify
-%     ambiguous poses; a brief ablation (training curves plot) shows
-%     manual > rule.
-%   - `others' failure: acknowledge it — this class is open-set
-%     (no consistent pose signature), so low recall is expected.
-%     Mitigation in 2.2: hard threshold on keypoint count.
-%
-% NOTE (from UMAP analysis): The DINOv2 UMAP (Fig.~\ref{fig:umap}, left) shows
-% all five classes heavily mixed in feature space — no clean separation by
-% appearance alone. This directly motivates GCN over a feature-space kNN or
-% MLP: pose is encoded in skeletal structure, not texture.
-
+Figure~\ref{fig:gcn_ablation} shows that manual annotations generally improve accuracy over rule-based labels, notably except for \texttt {Others} (Table~\ref{tab:gcn_accuracy}).
 
 \subsection{Training Data Selection}
 
-Despite the lightweight algorithm in Section 1.1, many patches were visually similar. For useful training data, we select visually diverse patches as follows:
 
+Many extracted patches are visually similar, so we select diverse training patches as follows:
 \begin{enumerate}
-    \item Embed all non-\texttt{others} patches with DINOv2 ViT-B/14 \cite{oquab2023dinov2, darcet2023vitneedreg, jose2024dinov2meetstextunified}, a pre-trained vision transformer that captures high-level semantic similarity better than pixel-level hashing.
-    \item Apply K-Means within each class\,$\times$\,domain group. The 2,000-patch budget is split equally between domains (1,000 each) to balance CUT's unpaired inputs; within each domain, $k \propto$ class-group size.
-    \item Select the patch nearest each centroid by cosine distance, choosing the most representative example per visual cluster.
+    \item DINOv2 ViT-B/14~\cite{oquab2023dinov2, darcet2023vitneedreg, jose2024dinov2meetstextunified}
+          embedding of all non-\texttt{others} patches to cluster by visual similarity.
+    \item Apply K-Means clustering in each class\,$\times$\,domain group. The 2,000-patch budget
+          is split equally, with $k \propto$ group size
+          within each domain.
+    \item Select the centroid-nearest patch by cosine similarity (i.e. the most representative sample per cluster).
 \end{enumerate}
 
-Figure~\ref{fig:umap} shows that game and movie patches occupy a largely shared DINOv2 embedding space, supporting the feasibility of unpaired translation. Class labels are not separable by appearance alone (left panel), confirming that pose-based classification requires skeletal features.
+Figure~\ref{fig:umap} shows the DINOv2 embeddings are not visually separable by class (left), but they are somewhat by domain (right). This suggests GCN skeletal features are more important than visual similarity.
 
 \begin{figure}[h]
   \centering
   \includegraphics[width=\linewidth]{figs/dino_umap.png}
-  \caption{UMAP projection of DINOv2 embeddings for all extracted patches,
-           coloured by pose class as in Section 1.2 (left) and domain (right).}
+  \caption{UMAP projection of DINOv2 embeddings for all extracted patches, coloured by pose class as in Section 1.2 (left) and domain (right). The embeddings are not visually separable by class, but they are somewhat by domain. This suggests GCN skeletal features are more important than visual similarity.}
   \label{fig:umap}
 \end{figure}
 
-% ============================================================
-% TASK: select most useful patches for style-transfer training.
-%       Own observations/insights required. Submit 50 samples. 100 words.
-%
-% SUGGESTED STRUCTURE:
-%   Sentence 2-3: method.
-%     "We embed all non-`others' patches with DINOv2 ViT-B/14~\cite{oquab2023}
-%      and apply K-Means independently within each class\,\(\times\)\,domain
-%      group, allocating \(k \propto\) group size from a total budget of
-%      2,000 patches.  The patch nearest (cosine distance) to each centroid
-%      is selected as the most representative example."
-%   Sentence 4: domain balance rationale.
-%     "Processing game and movie groups independently preserves
-%      the domain balance required by CUT's unpaired discriminator."
-%   Sentence 5: result/figure reference.
-%     "The resulting selection spans all pose classes and both domains;
-%      Figure~\ref{fig:umap} confirms that DINOv2 clusters reflect
-%      meaningful pose and domain variation."
-%
-% KEY THINGS TO JUSTIFY:
-%   - Why DINOv2? Pretrained vision transformer captures high-level
-%     semantic similarity better than pixel-level hashing or VGG features.
-%     Cite: Oquab et al. (2023) DINOv2.
-%   - Why per-(class × domain) independently? Maintains class and domain
-%     balance for CUT; prevents majority-class clusters from absorbing
-%     minority-class patches.
-%   - Why centroid-nearest? Selects the most "typical" example in each
-%     visual cluster rather than a random member.
-%   - Caveat: DINOv2 trained on natural images — embedding may not
-%     perfectly separate game-domain styles (worth one sentence).
-%
-% FIGURES:
-%   Fig 3a — UMAP (already generated by the pipeline).
-%             Source: figures/dino_umap.png
-%             Copy to: paper/figs/dino_umap.png
-%             Caption: "UMAP of DINOv2 patch embeddings: (left) coloured by class,
-%                       (right) coloured by domain. Clusters reflect pose and domain
-%                       variation, justifying embedding-based deduplication."
-%             This is your key empirical evidence for 1.3.
-%
-%
-%   Optional: 2×2 grid showing a near-duplicate cluster (before deduplication)
-%             vs. the selected centroid patch. Powerful visual argument.
-%             Save to: paper/figs/dedup_example.pdf
-%
-
-% ---- UMAP ANALYSIS NOTES (incorporate into prose) ----
-%
-% CLASS VIEW (left panel):
-%   - All 5 classes are heavily mixed in the main cloud — no clean separation
-%     by appearance alone. This confirms that DINOv2 features capture texture/
-%     structure, not pose category; GCN on keypoints is necessary.
-%   - head/shoulder patches (green/red) are somewhat denser in the upper region,
-%     consistent with their distinct texture vs full-body crops.
-%   - Isolated bottom-left cluster and far-right strand: likely unusual crops
-%     (extreme close-ups, partial detections, false positives). Worth inspecting
-%     to confirm the blur/motion filter in feat_extract.py catches them.
-%
-% DOMAIN VIEW (right panel):
-%   - Game (blue) and movie (orange) OVERLAP heavily in the centre. This is
-%     favourable for CUT: a shared visual manifold means the generator doesn't
-%     bridge completely alien distributions. Cite this as empirical support for
-%     the translation feasibility.
-%   - Isolated bottom cluster is predominantly movie (orange) — likely dark/
-%     shadowy scenes from The Godfather or The Sopranos. Confirm these are
-%     included in the training split and not accidentally filtered.
-%   - Right-side strands are predominantly game (blue) — possibly background-
-%     heavy or motion-blurred crops unique to game footage.
-%
-% KEY SENTENCES TO USE IN PROSE (1.3, ~30 words):
-%   "Figure~\ref{fig:umap} shows that game and movie patches occupy a largely
-%    shared DINOv2 embedding space, supporting the feasibility of unpaired
-%    translation. Class labels are not separable by appearance alone (left),
-%    confirming that pose-based classification requires skeletal features."
