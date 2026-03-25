@@ -8,14 +8,9 @@
 % ============================================================
 \subsection{Image Model Deployment}
 
-
-
-\begin{table}[t]
+\begin{table}[h]
   \centering
-  \caption{Finetuning setup shared by both 2.1 (full-frame CUT) and 2.2
-           (patch-level CUT). Training data differs: 2.1 uses 1000 full frames
-           per domain; 2.2 uses human patches selected in Section~1.3 (1000 per domain).
-           Training time was measured on the NCC HPC cluster.}
+  \caption{Finetuning setup shared by both Section 2.1 (full-frame CUT) and Section 2.2 (patch-level CUT). Training data differs: 2.1 uses 1000 full frames per domain; 2.2 uses human patches selected in Section~1.3 (1000 per domain).}
   \label{tab:setup}
   \small
   \begin{tabular}{ll}
@@ -30,9 +25,57 @@
     Crop size            & $256 \times 256$ \\
     Learning rate        & $2 \times 10^{-4}$ (Adam, $\beta_1=0.5$) \\
     GPU                  & NVIDIA GeForce RTX 2080 Ti \\
+    Frames per domain    & 1000 \\
     \bottomrule
   \end{tabular}
 \end{table}
+
+\begin{table}[h]
+  \centering
+  \caption{CUT full-frame translation metrics (2.1).
+           FID and KID measure distance from the translated output
+           distribution to the real target-domain distribution (lower
+           = closer to target). LPIPS measures perceptual distance
+           between translated output and the original input frame
+           (lower = less change applied). All metrics: lower is considered better.}
+  \label{tab:metrics21}
+  \begin{tabular}{lrrr}
+    \toprule
+    Direction & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
+    \midrule
+    Game $\to$ Movie (AtoB) & 239.4 & 0.085 & 0.391 \\
+    Movie $\to$ Game (BtoA) & 271.3 & 0.105 & 0.286 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+For our baseline, we use a pre-trained \texttt{horse2zebra} Contrastive Unpaired Translation (CUT) model \cite{park2020cut} (see \url{https://github.com/taesungp/contrastive-unpaired-translation}), and fine-tune it on full frames from the training videos (1000 frames per domain; 2000 in total). The experimental setup is shown in Table \ref{tab:setup}. CUT uses multilayer, patchwise contrastive loss which is more effective than cycle consistency loss (e.g. CycleGAN \cite{CycleGAN2017, isola2017image}), and CUT has only one generator and one discriminator which makes it $\sim$50\% more efficient than CycleGAN \cite{park2020cut}.
+
+Table \ref{tab:metrics21} shows FID, KID \cite{parmar2021cleanfid} and LPIPS \cite{zhang2018perceptual} for both translation directions. Movie $\to$ game translation performs worse for FID (271.3 vs 239.4) and KID (0.105 vs 0.085), which suggests that the opposite direction may be easier to learn, but the better LPIPS score (0.286 vs 0.391) suggests that the model more aggressively restyles in the game $\to$ movie direction.
+
+Figures \ref{fig:q21_failure} and \ref{fig:q21_success} show that game $\to$ movie transfer results in heavy blurring and a green tinge, which may be an artifact from the \texttt{horse2zebra} initialisation.
+
+[190 words - add more on visual results + movie!]
+
+The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not humans, which is a large domain gap. Results with 5 epochs of fine-tuning are okay (no zebra stripes!), but longer fine-tuning on a more appropriate pre-trained base may improve results.
+
+
+
+\newpage
+\begin{figure}
+  \centering
+  \includegraphics[width=0.55\linewidth]{figs/q21_failure.png}
+  \caption{Failures using the baseline method.}
+  \label{fig:q21_failure}
+\end{figure}
+
+\newpage
+\begin{figure}
+  \centering
+  \includegraphics[width=0.55\linewidth]{figs/q21_success.png}
+  \caption{Successes using the baseline method.}
+  \label{fig:q21_success}
+\end{figure}
 
 % ============================================================
 % TASK: unpaired image-to-image translation on full frames (not patches).
@@ -40,33 +83,6 @@
 %       ≥10 success + ≥10 failure comparisons. 250 words.
 %
 % SUGGESTED STRUCTURE:
-%
-%   [Model] ~50 words
-%     "We adopt Contrastive Unpaired Translation (CUT)~\cite{park2020},
-%      which trains a generator \(G: A \to B\) using a PatchNCE loss
-%      that maximises mutual information between input and output patches,
-%      requiring no paired data.  We initialise from the publicly available
-%      horse2zebra pretrained weights~\cite{park2020} and fine-tune for
-%      5\,+\,3 epochs (constant LR then linear decay) on 500 full frames
-%      per domain extracted at the timestamps of 1.1 detections
-%      (GPU: NVIDIA Turing, $\sim$X minutes)."
-%     Hardware: NVIDIA GeForce RTX 2080 Ti (NCC HPC cluster).
-%     NOTE: fill in actual training time once you have it (check slurm logs).
-%
-%   [Evaluation] ~80 words
-%     Metrics: FID (distribution-level quality), KID (unbiased FID),
-%     LPIPS (perceptual patch similarity).
-%     Report both directions: game→movie (AtoB) and movie→game (BtoA).
-%     Example sentence:
-%     "Table~\ref{tab:metrics21} reports FID, KID, and LPIPS in both
-%      translation directions.  Game-to-movie (AtoB) yields FID\,=\,234.4
-%      / KID\,=\,0.081, reflecting the larger domain gap from the
-%      constrained flat-shaded game palette to the varied, grain-heavy
-%      cinematic style of movie footage.  Movie-to-game (BtoA) is easier,
-%      achieving FID\,=\,143.6 / KID\,=\,0.051, as the generator maps
-%      diverse movie textures to the more homogeneous game rendering.
-%      The high LPIPS for BtoA (0.712 vs.\ 0.368 for AtoB) reflects
-%      aggressive full-frame restyling in the easier direction."
 %
 %   [Success cases] ~60 words
 %     "Figure~\ref{fig:21_success} shows 10 successful translations.
@@ -82,13 +98,6 @@
 %      artefacts on dark game scenes with low texture information;
 %      (3) temporal inconsistency visible across consecutive frames
 %      as the model has no inter-frame memory."
-%
-%   [Limitation] ~40 words
-%     "The horse2zebra pretrained weights introduce a domain gap:
-%      the generator's prior is tuned to animal textures rather than
-%      human clothing.  Fine-tuning for only 8 epochs partially corrects
-%      this; longer training or a more suitable pretrained base
-%      (e.g.\ cityscapes) may improve results."
 %
 % KEY THINGS TO STATE:
 %   - Hardware used and training time (explicitly required for marks)
@@ -130,28 +139,38 @@
 %     High LPIPS = lots of style transfer applied, which is expected for
 %     a full-frame model.
 
-\begin{table}[t]
-  \centering
-  \caption{CUT full-frame translation metrics (2.1).
-           FID and KID measure distance from the translated output
-           distribution to the real target-domain distribution (lower
-           = closer to target). LPIPS measures perceptual distance
-           between translated output and the original input frame
-           (lower = less change applied). All metrics: lower is better.}
-  \label{tab:metrics21}
-  \begin{tabular}{lrrr}
-    \toprule
-    Direction & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
-    \midrule
-    Game $\to$ Movie (AtoB) & 239.4 & 0.085 & 0.391 \\
-    Movie $\to$ Game (BtoA) & 271.3 & 0.105 & 0.286 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+
 
 
 % ============================================================
 \subsection{Local (Temporal) Enhancement}
+
+\newpage
+\begin{figure}
+  \centering
+  \includegraphics[width=0.9\linewidth]{figs/q22_compare.png}
+  \caption{Comparison between original (left), baseline (center) and enhanced pipeline (right). In these frames, the enhanced method effectively targets the people in the frames, whereas the baseline method creates a blur with green tinge.}
+  \label{fig:q22_compare}
+\end{figure}
+
+\begin{table}[t]
+  \centering
+  \caption{Metric comparison between 2.1 and
+           2.2 for
+           game$\to$movie translation. FID/KID measure distance to the
+           target-domain distribution; LPIPS measures perceptual change
+           versus input. All metrics: lower is better.}
+  \label{tab:metrics22}
+  \begin{tabular}{lrrr}
+    \toprule
+    Model & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
+    \midrule
+    2.1 Full-frame CUT          & 239.4 & 0.085 & 0.391 \\
+    2.2 Patch CUT + ST-GCN      & \textbf{186.3} & \textbf{0.063} & \textbf{0.317} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
 % ============================================================
 % TASK: improve 2.1 using local (patch) methods and/or temporal approaches.
 %       Submit enhanced video. ≥10 key-frame comparisons. 250 words.
@@ -270,25 +289,7 @@
 %   KEY ARGUMENT: global FID is the wrong metric for local compositing.
 %   The qualitative keyframe comparison is the primary evidence for 2.2.
 
-\begin{table}[t]
-  \centering
-  \caption{Metric comparison between 2.1 (full-frame CUT;
-           \texttt{output/q2\_1/20260325-120108/viz/metrics.json}) and
-           2.2 (patch-level CUT + ST-GCN;
-           \texttt{output/q2\_2/20260325-142517/viz/metrics.json}) for
-           game$\to$movie translation. FID/KID measure distance to the
-           target-domain distribution; LPIPS measures perceptual change
-           versus input. All metrics: lower is better.}
-  \label{tab:metrics22}
-  \begin{tabular}{lrrr}
-    \toprule
-    Model & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
-    \midrule
-    2.1 Full-frame CUT          & 239.4 & 0.085 & 0.391 \\
-    2.2 Patch CUT + ST-GCN      & \textbf{186.3} & \textbf{0.063} & \textbf{0.317} \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+
 
 % \begin{figure}[t]
 %   \centering
