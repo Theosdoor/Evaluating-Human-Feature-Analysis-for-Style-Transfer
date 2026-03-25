@@ -10,7 +10,7 @@
 \subsection{Human Patch Extraction}
 
 We use \texttt{YOLO26m} \cite{yolo26_ultralytics} to detect and extract 4000 human patches from the training videos: 2000 for each domain (game/movie). 
-Longer videos should be more diverse, so this budget is split proportional to length, so longer videos represent more of the dataset. 
+The budget is divided equally between domains (2,000 each); within the movie domain it is allocated proportional to video duration so that longer clips contribute more patches. 
 To prioritise diverse patches, we reject near-static frames and enforce a minimum spacing between YOLO calls (Table~\ref{tab:extract_params}).
 
 \begin{table}[h]
@@ -23,14 +23,14 @@ To prioritise diverse patches, we reject near-static frames and enforce a minimu
     \midrule
     \texttt{yolo\_interval}, $\delta_f$            & 10 frames & minimum spacing between YOLO calls \\
     \texttt{scene\_change\_threshold}, $\tau_{sc}$ & 8         & minimum inter-frame MAD; rejects near-static shots \\
-    \texttt{blur\_threshold}, $\tau$               & 40        & Laplacian normalisation denominator \\
+    \texttt{blur\_threshold}, $\tau$               & 40        & Laplacian blur floor; normalised as $\min(\text{blur}/3\tau,\,1)$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 \begin{table}[h]
   \centering
-  \caption{Composite patch quality score components. Maximum achievable score is 0.75; sharpness is normalised against $\tau$ (Table~\ref{tab:extract_params}).}
+  \caption{Composite patch quality score components. Maximum achievable score is 0.75; sharpness is normalised against $3\tau$ (Table~\ref{tab:extract_params}).}
   \label{tab:score_weights}
   \begin{tabular}{llr}
     \toprule
