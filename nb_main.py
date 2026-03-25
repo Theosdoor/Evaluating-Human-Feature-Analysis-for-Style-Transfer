@@ -316,4 +316,27 @@ if RUN_FINETUNE_22:
 
 if RUN_FINETUNE_21 or RUN_FINETUNE_22:
     _rm(frame_dataroot)  # testA/testB no longer needed after both evaluations
- 
+
+# %% [markdown]
+# ## Submission multimedia
+#
+# Samples the required image files into `submit/`:
+# - **1.1** — 50 random patches
+# - **1.2** — 20 images per pose class
+# - **1.3** — 50 random selected patches
+#
+# Translated videos (2.1, 2.2) were written to `output/` during the pipeline above.
+
+# %%
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("sample4submit", os.path.join(PROJECT_ROOT, "scripts", "sample4submit.py"))
+assert _spec is not None and _spec.loader is not None
+_mod = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+
+_mod.run_sampling(
+    dir_11=extract_save_path,
+    dir_12=gcn_save_path,
+    dir_13=train_select_save_path,
+    project_root=PROJECT_ROOT,
+)
