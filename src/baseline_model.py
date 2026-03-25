@@ -13,13 +13,12 @@ Pipeline
                                the test video and write the output mp4.
 5. compute_metrics           — FID, KID, LPIPS for a translated image set.
 6. save_comparison_grid      — side-by-side input/translated figure.
-7. save_umap                 — VGG16 feature UMAP across domain groups.
 
 Shared helpers (video I/O, CUT subprocess, fine-tuning) live in src/utils.py.
 
 Public API imported in nb_main.py:
     ensure_pretrained_models, build_frame_dataset,
-    translate_test_video, compute_metrics, save_comparison_grid, save_umap,
+    translate_test_video, compute_metrics, save_comparison_grid,
     make_inference_dataroot, evaluate_translation, PRETRAINED_MODELS
 """
 
@@ -381,46 +380,6 @@ def save_comparison_grid(
     print(f"[CUT] Saved → {out_path}")
 
 
-def save_umap(
-    groups: list[list[str]],
-    labels: list[str],
-    colours: list[str],
-    title: str,
-    out_path: str,
-    n_each: int = 150,
-    device: str = "cpu",
-) -> None:
-    """Compute VGG16 features for each group of image paths and plot a UMAP."""
-    import umap
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    feat_groups = [_vgg_features(g[:n_each], device) for g in groups]
-    all_feats   = np.concatenate(feat_groups, axis=0)
-    all_labels  = np.concatenate([
-        np.full(len(fg), label) for fg, label in zip(feat_groups, labels)
-    ])
-
-    print("[CUT] Fitting UMAP…")
-    reducer   = umap.UMAP(n_neighbors=15, min_dist=0.1, random_state=42)
-    embedding = reducer.fit_transform(all_feats)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for label, colour in zip(labels, colours):
-        mask = all_labels == label
-        ax.scatter(embedding[mask, 0], embedding[mask, 1],
-                   label=label, alpha=0.5, s=10, c=colour)
-    ax.legend(markerscale=3)
-    ax.set_title(title)
-    ax.set_xlabel("UMAP-1")
-    ax.set_ylabel("UMAP-2")
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    plt.savefig(out_path, dpi=150)
-    plt.close()
-    print(f"[CUT] Saved → {out_path}")
-
 
 def evaluate_translation(
     cut_dir: str,
@@ -487,8 +446,6 @@ def evaluate_translation(
 
     save_comparison_grid(game_imgs,  g2m_fakes, f"game → movie ({tag})", os.path.join(viz_dir, "comparison_g2m.png"))
     save_comparison_grid(movie_imgs, m2g_fakes, f"movie → game ({tag})", os.path.join(viz_dir, "comparison_m2g.png"))
-    save_umap([game_imgs, movie_imgs, g2m_fakes], ["game (real)", "movie (real)", "game→movie (fake)"], ["steelblue", "tomato", "mediumpurple"], f"VGG feature UMAP: game→movie ({tag})", os.path.join(viz_dir, "umap_g2m.png"), device=device)
-    save_umap([game_imgs, movie_imgs, m2g_fakes], ["game (real)", "movie (real)", "movie→game (fake)"], ["steelblue", "tomato", "seagreen"],    f"VGG feature UMAP: movie→game ({tag})", os.path.join(viz_dir, "umap_m2g.png"), device=device)
 
     return metrics
 
@@ -546,32 +503,3 @@ def run_q2_1(
             shutil.rmtree(os.path.join(out_dir, d), ignore_errors=True)
 
     return metrics
-
-
-def _vgg_features(
-    image_paths: list[str],
-    device: str,
-    batch_size: int = 32,
-) -> np.ndarray:
-    import torchvision.models as tvm
-    import torchvision.transforms as T
-
-    vgg = tvm.vgg16(weights=tvm.VGG16_Weights.DEFAULT).features.to(device).eval()
-    tfm = T.Compose([
-        T.ToPILImage(),
-        T.Resize((224, 224)),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
-    feats = []
-    with torch.no_grad():
-        for i in range(0, len(image_paths), batch_size):
-            batch = [
-                tfm(cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB))
-                for p in image_paths[i: i + batch_size]
-            ]
-            t   = torch.stack(batch).to(device)
-            out = vgg(t)
-            out = torch.nn.functional.adaptive_avg_pool2d(out, 1).squeeze(-1).squeeze(-1)
-            feats.append(out.cpu().numpy())
-    return np.concatenate(feats, axis=0)
