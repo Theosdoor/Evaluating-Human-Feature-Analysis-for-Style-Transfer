@@ -122,7 +122,9 @@ def _run_q21_m2g(movie_frames_dir: str, q2_1_out_dir: str) -> str:
         raise RuntimeError(f"No movie frames in {movie_frames_dir}")
     shutil.copy(movie_files[0], os.path.join(dummy_dir, "dummy.jpg"))
 
-    dataroot  = make_inference_dataroot(movie_frames_dir, dummy_dir)
+    # BtoA: CUT translates trainB → trainA style.
+    # trainA = dummy (game-domain placeholder), trainB = movie frames to translate.
+    dataroot  = make_inference_dataroot(dummy_dir, movie_frames_dir)
     fake_g_dir = os.path.join(q2_1_out_dir, "results", "test_m2g")
 
     print("[M2G] Running 2.1 (cut_finetuned_fullframe) BtoA…")
@@ -247,13 +249,15 @@ def main() -> None:
     print("  # 2.1 tab (movie original | fake-game):")
     print(f"  python3 scripts/figure_select.py \\")
     print(f"      --q21-orig-dir {movie_frames_dir} \\")
-    print(f"      --q21-fake-dir {fake_g_21_dir}")
+    print(f"      --q21-fake-dir {fake_g_21_dir} \\")
+    print(f"      --direction m2g")
     print()
     print("  # 2.2 tab (movie original | 2.1 fake-game | 2.2 enhanced-game):")
     print(f"  python3 scripts/figure_select.py \\")
     print(f"      --q22-orig-dir {movie_frames_dir} \\")
     print(f"      --q22-21-dir   {fake_g_21_dir} \\")
-    print(f"      --q22-22-dir   {enh_dir}")
+    print(f"      --q22-22-dir   {enh_dir} \\")
+    print(f"      --direction m2g")
     print("="*70 + "\n")
 
 

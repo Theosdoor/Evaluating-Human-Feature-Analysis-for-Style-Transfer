@@ -104,7 +104,8 @@ def _match_triples(
     fake21_paths: list[str],
     fake22_paths: list[str],
 ) -> list[tuple[str, str, str]]:
-    """Match originals, 2.1-fakes, 2.2-fakes by basename (falls back to stem)."""
+    """Match originals, 2.1-fakes, 2.2-fakes by basename (falls back to stem,
+    then by sorted index when names differ across dirs)."""
     def _by_stem(paths):
         return {os.path.splitext(os.path.basename(p))[0]: p for p in paths}
     by21 = _by_stem(fake21_paths)
@@ -114,6 +115,15 @@ def _match_triples(
         stem = os.path.splitext(os.path.basename(op))[0]
         if stem in by21 and stem in by22:
             triples.append((op, by21[stem], by22[stem]))
+
+    # Fallback: if stem matching failed (e.g. enh_frames use frame_NNNNN.jpg
+    # while orig uses TheGodfather_frame_NNNNN.jpg), match by sorted position.
+    if not triples and fake21_paths and fake22_paths:
+        s21 = sorted(fake21_paths)
+        s22 = sorted(fake22_paths)
+        for op, f21, f22 in zip(sorted(orig_paths), s21, s22):
+            triples.append((op, f21, f22))
+
     return triples
 
 
@@ -205,8 +215,11 @@ def make_grid(
 # Selection state
 # ---------------------------------------------------------------------------
 
-def _save_grid_pdf(grid: np.ndarray, path: str) -> None:
-    """Save a BGR numpy grid as a PDF via matplotlib (lossless, LaTeX-ready)."""
+def _save_grid_pdf(grid: np.ndarray, path: str, figsize: tuple | None = None) -> None:
+    """Save a BGR numpy grid as a PDF via matplotlib (lossless, LaTeX-ready).
+
+    figsize: optional (width_in, height_in) override; defaults to pixel dims / dpi.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -214,8 +227,10 @@ def _save_grid_pdf(grid: np.ndarray, path: str) -> None:
     rgb = cv2.cvtColor(grid, cv2.COLOR_BGR2RGB)
     h, w = rgb.shape[:2]
     dpi = 150
-    fig, ax = plt.subplots(figsize=(w / dpi, h / dpi), dpi=dpi)
-    ax.imshow(rgb)
+    if figsize is None:
+        figsize = (w / dpi, h / dpi)
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    ax.imshow(rgb, aspect="auto")
     ax.axis("off")
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -342,17 +357,21 @@ class SelectionState:
             if v == "selected" and int(i) < n22
         ][:TARGET_22]
 
-        for name, groups, cw, ch in [
-            ("q21_success", [[op, fp] for op, fp in success_pairs], cell_w_21, cell_h_21),
-            ("q21_failure", [[op, fp] for op, fp in failure_pairs], cell_w_21, cell_h_21),
-            ("q22_compare", [[op, f21, f22] for op, f21, f22 in selected_triples], cell_wh_22, cell_wh_22),
+        # 500×900 pt PDF for q22 (≈6.94"×12.5"); auto-size for q21
+        Q22_FIGSIZE = (500 / 72, 900 / 72)
+
+        tag = f"_{self.direction}" if hasattr(self, "direction") else ""
+        for name, groups, cw, ch, figsize in [
+            (f"q21_success{tag}", [[op, fp] for op, fp in success_pairs], cell_w_21, cell_h_21, None),
+            (f"q21_failure{tag}", [[op, fp] for op, fp in failure_pairs], cell_w_21, cell_h_21, None),
+            (f"q22_compare{tag}", [[op, f21, f22] for op, f21, f22 in selected_triples], cell_wh_22, cell_wh_22, Q22_FIGSIZE),
         ]:
             if not groups:
                 print(f"[figsel] Skip {name}: no selections")
                 continue
             grid = make_grid(groups, cell_w=cw, cell_h=ch)
             path = os.path.join(self.out_dir, f"{name}.pdf")
-            _save_grid_pdf(grid, path)
+            _save_grid_pdf(grid, path, figsize=figsize)
             print(f"[figsel] Saved {path}  ({len(groups)} rows)")
             results[name] = path
 
@@ -908,10 +927,14 @@ def main():
                         help="Directory to write figure PNGs (default: paper/figs)")
     parser.add_argument("--sel-dir", default=os.path.join(PROJECT_ROOT, "output", "figure_select"),
                         help="Directory for selections JSON (default: output/figure_select)")
+    parser.add_argument("--direction", default="g2m", choices=["g2m", "m2g"],
+                        help="Translation direction tag used in selections filename (default: g2m)")
     parser.add_argument("--port", type=int, default=5001)
-    parser.add_argument("--skip-interval", type=int, default=30,
-                        help="Number of frames to jump forward on Space/→ (default: 30)")
+    parser.add_argument("--skip-interval", type=int, default=None,
+                        help="Number of frames to jump forward on Space/→ (default: 1 for m2g, 30 for g2m)")
     args = parser.parse_args()
+    if args.skip_interval is None:
+        args.skip_interval = 1 if args.direction == "m2g" else 30
 
     # Discover dirs
     orig21_dir, fake21_dir = _resolve_q21_dirs(args)
@@ -935,13 +958,14 @@ def main():
     print(f"         orig_dir  = {orig22_dir}")
     print(f"         fake21    = {f21_dir}")
     print(f"         fake22    = {f22_dir}")
-    print(f"[figsel] Selections → {args.sel_dir}/selections.json")
+    print(f"[figsel] Selections → {args.sel_dir}/selections_{args.direction}.json")
     print(f"[figsel] Figures    → {args.out_dir}")
     print(f"[figsel] Open http://localhost:{args.port}")
 
-    json_path = os.path.join(args.sel_dir, "selections.json")
+    json_path = os.path.join(args.sel_dir, f"selections_{args.direction}.json")
     STATE = SelectionState(pairs_21, triples_22, json_path, args.out_dir)
     STATE.skip_interval = args.skip_interval
+    STATE.direction = args.direction
     print(f"[figsel] Skip interval: {args.skip_interval} frames (Space/→)")
 
     app.run(host="0.0.0.0", port=args.port, debug=False, threaded=True)
