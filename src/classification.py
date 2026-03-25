@@ -255,8 +255,6 @@ COCO_SKELETON = [
     (5, 11), (6, 12), (11, 12),
     (11, 13), (13, 15), (12, 14), (14, 16),
 ]
-_SKELETON = COCO_SKELETON  # local alias kept for draw helpers below
-
 _F   = cv2.FONT_HERSHEY_DUPLEX
 _FT  = cv2.FONT_HERSHEY_PLAIN   # small mono for table cells
 
@@ -285,7 +283,7 @@ def _draw_detections(img_bgr, boxes, kps_all, primary, cfg):
         cv2.rectangle(out, (bx1, by1), (bx2, by2), color, thick)
 
     kps = kps_all[primary]
-    for a, b in _SKELETON:
+    for a, b in COCO_SKELETON:
         xa, ya, ca = kps[a]
         xb, yb, cb = kps[b]
         if ca >= cfg.back_conf and cb >= cfg.back_conf:
@@ -423,6 +421,101 @@ def _draw_trace(trace_rows, orientation, extent, final_cls, panel_h, panel_w):
     return out
 
 
+def _no_detection_panel(img_bgr: np.ndarray, out_h: int) -> np.ndarray:
+    """Return a panel image for the 'no detections' case."""
+    h_img, w_img = img_bgr.shape[:2]
+    total_w = w_img + 340 + 500 + 6
+    out = np.full((out_h, total_w, 3), _BG, dtype=np.uint8)
+    ph  = min(h_img, out_h)
+    out[:ph, :w_img] = img_bgr[:ph]
+    cv2.line(out, (w_img + 2, 0), (w_img + 2, out_h), _SEP, 2)
+    _put(out, "No pose detections found",
+         (w_img + 12, out_h // 2 - 10), 0.55, _OTHERS, thickness=1)
+    _put(out, "=> classified as 'others'",
+         (w_img + 12, out_h // 2 + 18), 0.48, _MUTED)
+    return out
+
+
+def _build_trace_rows(kps: np.ndarray, bbox: np.ndarray, cfg) -> list:
+    """Build the decision-trace rows shared by both render_diagnostic variants."""
+    nose, l_eye, r_eye = kps[0, 2], kps[1, 2], kps[2, 2]
+    n_lower  = n_visible(kps, LOWER_KPS, cfg.body_conf)
+    n_ankles = n_visible(kps, ANKLE_KPS, cfg.body_conf)
+    n_shldrs = n_visible(kps, UPPER_KPS, cfg.body_conf)
+    h_box    = bbox[3] - bbox[1]
+    w_box    = (bbox[2] - bbox[0]) + 1e-6
+    aspect   = h_box / w_box
+    return [
+        ("Front",
+         f"n={nose:.2f} eL={l_eye:.2f} eR={r_eye:.2f}",
+         f"all>={cfg.face_conf:.2f}",
+         "PASS" if (nose >= cfg.face_conf and l_eye >= cfg.face_conf and r_eye >= cfg.face_conf) else "FAIL"),
+        ("Back",
+         f"n={nose:.2f} eyes_vis={sum(1 for c in (l_eye, r_eye) if c >= cfg.back_conf)}",
+         f"n<{cfg.nose_back_conf:.2f} eyes<={cfg.max_eyes_for_back}",
+         "PASS" if (nose < cfg.nose_back_conf and
+                    sum(1 for c in (l_eye, r_eye) if c >= cfg.back_conf) <= cfg.max_eyes_for_back)
+                else "FAIL"),
+        ("Lower-body",
+         f"lower={n_lower} ankles={n_ankles}",
+         "ankles>=1 OR lower>=3",
+         "PASS" if (n_ankles >= 1 or n_lower >= 3) else "FAIL"),
+        ("Aspect",
+         f"h/w={aspect:.2f}",
+         f">={cfg.aspect_ratio_min:.1f}",
+         "PASS" if aspect >= cfg.aspect_ratio_min else "FAIL"),
+        ("Shoulder",
+         f"vis={n_shldrs}",
+         f">=1@{cfg.body_conf:.2f}",
+         "PASS" if n_shldrs >= 1 else "FAIL"),
+    ]
+
+
+def _render_panels(
+    img_bgr: np.ndarray,
+    boxes: np.ndarray,
+    kp_data: np.ndarray,
+    primary: int,
+    kps: np.ndarray,
+    bbox: np.ndarray,
+    cfg,
+    predicted_class,
+) -> np.ndarray:
+    """Build and concatenate the 4 diagnostic panels (detection, crop, bars, trace)."""
+    h_img, w_img = img_bgr.shape[:2]
+    OUT_H = max(h_img, 380)
+
+    x1c = max(0, int(bbox[0])); y1c = max(0, int(bbox[1]))
+    x2c = min(w_img, int(bbox[2])); y2c = min(h_img, int(bbox[3]))
+    crop_bgr = img_bgr[y1c:y2c, x1c:x2c]
+
+    orientation = classify_orientation(kps, cfg)
+    extent      = classify_extent(kps, bbox, cfg)
+    final_cls   = predicted_class if predicted_class is not None \
+                  else classify_keypoints(kps, bbox, cfg)
+
+    trace_rows = _build_trace_rows(kps, bbox, cfg)
+
+    scale_p1 = OUT_H / max(h_img, 1)
+    p1_w     = int(w_img * scale_p1)
+    p1 = _draw_detections(img_bgr, boxes, kp_data, primary, cfg)
+    p1 = cv2.resize(p1, (p1_w, OUT_H), interpolation=cv2.INTER_LINEAR)
+
+    crop_panel_w = max(120, min(200, int(OUT_H * 0.5)))
+    p2 = _draw_crop(crop_bgr, orientation, extent, final_cls, OUT_H, crop_panel_w)
+
+    bar_panel_w = 240
+    p3 = _draw_bar_chart(kps[:, 2], COCO_KP_NAMES, cfg, OUT_H, bar_panel_w)
+
+    trace_panel_w = 500
+    p4 = _draw_trace(trace_rows, orientation, extent, final_cls, OUT_H, trace_panel_w)
+
+    sep = np.full((OUT_H, 2, 3), _SEP, dtype=np.uint8)
+    out = np.concatenate([p1, sep, p2, sep, p3, sep, p4], axis=1)
+    cv2.rectangle(out, (0, 0), (out.shape[1] - 1, out.shape[0] - 1), _SEP, 1)
+    return out
+
+
 def render_diagnostic(
     result,
     img_bgr,
@@ -452,94 +545,17 @@ def render_diagnostic(
     if cfg is None:
         cfg = DEFAULT_CONFIG
 
-    h_img, w_img = img_bgr.shape[:2]
+    h_img = img_bgr.shape[0]
     OUT_H = max(h_img, 380)
 
-    # --- No detections ---
     if result.keypoints is None or result.keypoints.data.shape[0] == 0:
-        bar_w   = 340
-        trace_w = 500
-        total_w = w_img + bar_w + trace_w + 6
-        out = np.full((OUT_H, total_w, 3), _BG, dtype=np.uint8)
-        ph  = min(h_img, OUT_H)
-        out[:ph, :w_img] = img_bgr[:ph]
-        cv2.line(out, (w_img + 2, 0), (w_img + 2, OUT_H), _SEP, 2)
-        _put(out, "No pose detections found",
-             (w_img + 12, OUT_H // 2 - 10), 0.55, _OTHERS, thickness=1)
-        _put(out, "=> classified as 'others'",
-             (w_img + 12, OUT_H // 2 + 18), 0.48, _MUTED)
-        return out
+        return _no_detection_panel(img_bgr, OUT_H)
 
     boxes   = result.boxes.xyxy.cpu().numpy()
     kp_data = result.keypoints.data.cpu().numpy()
     areas   = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
     primary = int(np.argmax(areas))
-    kps     = kp_data[primary]
-    bbox    = boxes[primary]
-
-    x1c = max(0, int(bbox[0])); y1c = max(0, int(bbox[1]))
-    x2c = min(w_img, int(bbox[2])); y2c = min(h_img, int(bbox[3]))
-    crop_bgr = img_bgr[y1c:y2c, x1c:x2c]
-
-    orientation = classify_orientation(kps, cfg)
-    extent      = classify_extent(kps, bbox, cfg)
-    final_cls   = predicted_class if predicted_class is not None \
-                  else classify_keypoints(kps, bbox, cfg)
-
-    # Trace values
-    nose, l_eye, r_eye = kps[0, 2], kps[1, 2], kps[2, 2]
-    n_lower  = n_visible(kps, LOWER_KPS, cfg.body_conf)
-    n_ankles = n_visible(kps, ANKLE_KPS, cfg.body_conf)
-    n_shldrs = n_visible(kps, UPPER_KPS, cfg.body_conf)
-    h_box    = bbox[3] - bbox[1]
-    w_box    = (bbox[2] - bbox[0]) + 1e-6
-    aspect   = h_box / w_box
-
-    trace_rows = [
-        ("Front",
-         f"n={nose:.2f} eL={l_eye:.2f} eR={r_eye:.2f}",
-         f"all>={cfg.face_conf:.2f}",
-         "PASS" if (nose >= cfg.face_conf and l_eye >= cfg.face_conf and r_eye >= cfg.face_conf) else "FAIL"),
-        ("Back",
-         f"n={nose:.2f} eyes_vis={sum(1 for c in (l_eye, r_eye) if c >= cfg.back_conf)}",
-         f"n<{cfg.nose_back_conf:.2f} eyes<={cfg.max_eyes_for_back}",
-         "PASS" if (nose < cfg.nose_back_conf and
-                    sum(1 for c in (l_eye, r_eye) if c >= cfg.back_conf) <= cfg.max_eyes_for_back)
-                else "FAIL"),
-        ("Lower-body",
-         f"lower={n_lower} ankles={n_ankles}",
-         "ankles>=1 OR lower>=3",
-         "PASS" if (n_ankles >= 1 or n_lower >= 3) else "FAIL"),
-        ("Aspect",
-         f"h/w={aspect:.2f}",
-         f">={cfg.aspect_ratio_min:.1f}",
-         "PASS" if aspect >= cfg.aspect_ratio_min else "FAIL"),
-        ("Shoulder",
-         f"vis={n_shldrs}",
-         f">=1@{cfg.body_conf:.2f}",
-         "PASS" if n_shldrs >= 1 else "FAIL"),
-    ]
-
-    # --- Build panels ---
-    scale_p1 = OUT_H / max(h_img, 1)
-    p1_w     = int(w_img * scale_p1)
-    p1 = _draw_detections(img_bgr, boxes, kp_data, primary, cfg)
-    p1 = cv2.resize(p1, (p1_w, OUT_H), interpolation=cv2.INTER_LINEAR)
-
-    crop_panel_w = max(120, min(200, int(OUT_H * 0.5)))
-    p2 = _draw_crop(crop_bgr, orientation, extent, final_cls, OUT_H, crop_panel_w)
-
-    bar_panel_w = 240
-    p3 = _draw_bar_chart(kps[:, 2], COCO_KP_NAMES, cfg, OUT_H, bar_panel_w)
-
-    trace_panel_w = 500
-    p4 = _draw_trace(trace_rows, orientation, extent, final_cls, OUT_H, trace_panel_w)
-
-    # Thin separators + outer border
-    sep = np.full((OUT_H, 2, 3), _SEP, dtype=np.uint8)
-    out = np.concatenate([p1, sep, p2, sep, p3, sep, p4], axis=1)
-    cv2.rectangle(out, (0, 0), (out.shape[1] - 1, out.shape[0] - 1), _SEP, 1)
-    return out
+    return _render_panels(img_bgr, boxes, kp_data, primary, kp_data[primary], boxes[primary], cfg, predicted_class)
 
 
 def render_diagnostic_from_kps(
@@ -567,89 +583,14 @@ def render_diagnostic_from_kps(
     if cfg is None:
         cfg = DEFAULT_CONFIG
 
-    h_img, w_img = img_bgr.shape[:2]
+    h_img = img_bgr.shape[0]
     OUT_H = max(h_img, 380)
 
-    # --- No detection case ---
     if kps is None or bbox is None:
-        bar_w   = 340
-        trace_w = 500
-        total_w = w_img + bar_w + trace_w + 6
-        out = np.full((OUT_H, total_w, 3), _BG, dtype=np.uint8)
-        ph  = min(h_img, OUT_H)
-        out[:ph, :w_img] = img_bgr[:ph]
-        cv2.line(out, (w_img + 2, 0), (w_img + 2, OUT_H), _SEP, 2)
-        _put(out, "No pose detections found",
-             (w_img + 12, OUT_H // 2 - 10), 0.55, _OTHERS, thickness=1)
-        _put(out, "=> classified as 'others'",
-             (w_img + 12, OUT_H // 2 + 18), 0.48, _MUTED)
-        return out
+        return _no_detection_panel(img_bgr, OUT_H)
 
-    # Build a single-detection boxes/kps_all compatible with _draw_detections
-    boxes   = bbox[np.newaxis]        # [1, 4]
-    kp_data = kps[np.newaxis]         # [1, 17, 3]
-    primary = 0
-
-    x1c = max(0, int(bbox[0])); y1c = max(0, int(bbox[1]))
-    x2c = min(w_img, int(bbox[2])); y2c = min(h_img, int(bbox[3]))
-    crop_bgr = img_bgr[y1c:y2c, x1c:x2c]
-
-    orientation = classify_orientation(kps, cfg)
-    extent      = classify_extent(kps, bbox, cfg)
-    final_cls   = predicted_class if predicted_class is not None \
-                  else classify_keypoints(kps, bbox, cfg)
-
-    nose, l_eye, r_eye = kps[0, 2], kps[1, 2], kps[2, 2]
-    n_lower  = n_visible(kps, LOWER_KPS, cfg.body_conf)
-    n_ankles = n_visible(kps, ANKLE_KPS, cfg.body_conf)
-    n_shldrs = n_visible(kps, UPPER_KPS, cfg.body_conf)
-    h_box    = bbox[3] - bbox[1]
-    w_box    = (bbox[2] - bbox[0]) + 1e-6
-    aspect   = h_box / w_box
-
-    trace_rows = [
-        ("Front",
-         f"n={nose:.2f} eL={l_eye:.2f} eR={r_eye:.2f}",
-         f"all>={cfg.face_conf:.2f}",
-         "PASS" if (nose >= cfg.face_conf and l_eye >= cfg.face_conf and r_eye >= cfg.face_conf) else "FAIL"),
-        ("Back",
-         f"n={nose:.2f} eyes_vis={sum(1 for c in (l_eye, r_eye) if c >= cfg.back_conf)}",
-         f"n<{cfg.nose_back_conf:.2f} eyes<={cfg.max_eyes_for_back}",
-         "PASS" if (nose < cfg.nose_back_conf and
-                    sum(1 for c in (l_eye, r_eye) if c >= cfg.back_conf) <= cfg.max_eyes_for_back)
-                else "FAIL"),
-        ("Lower-body",
-         f"lower={n_lower} ankles={n_ankles}",
-         "ankles>=1 OR lower>=3",
-         "PASS" if (n_ankles >= 1 or n_lower >= 3) else "FAIL"),
-        ("Aspect",
-         f"h/w={aspect:.2f}",
-         f">={cfg.aspect_ratio_min:.1f}",
-         "PASS" if aspect >= cfg.aspect_ratio_min else "FAIL"),
-        ("Shoulder",
-         f"vis={n_shldrs}",
-         f">=1@{cfg.body_conf:.2f}",
-         "PASS" if n_shldrs >= 1 else "FAIL"),
-    ]
-
-    scale_p1 = OUT_H / max(h_img, 1)
-    p1_w     = int(w_img * scale_p1)
-    p1 = _draw_detections(img_bgr, boxes, kp_data, primary, cfg)
-    p1 = cv2.resize(p1, (p1_w, OUT_H), interpolation=cv2.INTER_LINEAR)
-
-    crop_panel_w = max(120, min(200, int(OUT_H * 0.5)))
-    p2 = _draw_crop(crop_bgr, orientation, extent, final_cls, OUT_H, crop_panel_w)
-
-    bar_panel_w = 240
-    p3 = _draw_bar_chart(kps[:, 2], COCO_KP_NAMES, cfg, OUT_H, bar_panel_w)
-
-    trace_panel_w = 500
-    p4 = _draw_trace(trace_rows, orientation, extent, final_cls, OUT_H, trace_panel_w)
-
-    sep = np.full((OUT_H, 2, 3), _SEP, dtype=np.uint8)
-    out = np.concatenate([p1, sep, p2, sep, p3, sep, p4], axis=1)
-    cv2.rectangle(out, (0, 0), (out.shape[1] - 1, out.shape[0] - 1), _SEP, 1)
-    return out
+    # Single-detection layout: wrap kps/bbox so _draw_detections gets [1, ...] arrays.
+    return _render_panels(img_bgr, bbox[np.newaxis], kps[np.newaxis], 0, kps, bbox, cfg, predicted_class)
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +611,7 @@ def classify_directory(
     Classify all .jpg/.png files in input_dir using batched YOLO inference.
 
     Args:
-        pose_model:     YOLOv8 pose model instance.
+        pose_model:     YOLO26 pose model instance.
         input_dir:      Directory of cropped human patches.
         output_dir:     Root output directory; per-class subdirs created automatically.
         cfg:            ClassifierConfig controlling thresholds and ablation flags.

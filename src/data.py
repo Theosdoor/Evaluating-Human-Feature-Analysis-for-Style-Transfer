@@ -23,6 +23,7 @@ import numpy as np
 from tqdm import tqdm
 
 from src.classification import CLASSES
+from src.utils import MOVIE_KEYWORDS, GAME_KEYWORDS
 
 
 # ---------------------------------------------------------------------------
@@ -54,9 +55,9 @@ def _domain_from_path(path: str) -> str:
     Fallback: return 'unknown'.
     """
     fname = os.path.basename(path).lower()
-    if 'game' in fname or 'mafia' in fname:
+    if any(kw in fname for kw in GAME_KEYWORDS):
         return 'game'
-    if any(kw in fname for kw in ('movie', 'godfather', 'irishman', 'sopranos')):
+    if any(kw in fname for kw in MOVIE_KEYWORDS):
         return 'movie'
     return 'unknown'
 

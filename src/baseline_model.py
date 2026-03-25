@@ -93,10 +93,20 @@ def build_frame_dataset(
     train_paths: list[str],
     data_dir: str,
     n_per_domain: int = 500,
+    build_train: bool = True,
+    n_test: int = 200,
 ) -> tuple[str, str, str, str]:
     """
     Extract full frames at the timestamps from 1.1 and organise into
     CUT's trainA (game) / trainB (movie) layout.
+
+    Args:
+        build_train: If True (default), extract trainA/trainB (slow, needed
+                     for 2.1 fine-tuning). If False, skip trainA/trainB and
+                     extract testA/testB directly from the videos — much
+                     faster when only 2.2 evaluation is needed.
+        n_test:      Number of frames to extract per domain for the test split
+                     (only used when build_train=False).
 
     Returns (trainA_dir, trainB_dir, testA_dir, testB_dir).
     """
@@ -109,19 +119,25 @@ def build_frame_dataset(
     testA  = os.path.join(data_dir, "testA")
     testB  = os.path.join(data_dir, "testB")
 
-    print("[CUT] Building frame dataset…")
-    a_rebuilt = _extract_frames(selected_detections, game_paths,  trainA, n_per_domain)
-    b_rebuilt = _extract_frames(selected_detections, movie_paths, trainB, n_per_domain)
+    if build_train:
+        print("[CUT] Building frame dataset (train + test)…")
+        a_rebuilt = _extract_frames(selected_detections, game_paths,  trainA, n_per_domain)
+        b_rebuilt = _extract_frames(selected_detections, movie_paths, trainB, n_per_domain)
+        _make_held_out_split(trainA, testA, force=a_rebuilt)
+        _make_held_out_split(trainB, testB, force=b_rebuilt)
+        na = len(glob.glob(os.path.join(trainA, "*.jpg")))
+        nb = len(glob.glob(os.path.join(trainB, "*.jpg")))
+        print(f"[CUT] trainA (game):  {na} frames")
+        print(f"[CUT] trainB (movie): {nb} frames")
+    else:
+        print("[CUT] Building test frames only (skipping trainA/trainB)…")
+        _extract_frames(selected_detections, game_paths,  testA, n_test)
+        _extract_frames(selected_detections, movie_paths, testB, n_test)
 
-    _make_held_out_split(trainA, testA, force=a_rebuilt)
-    _make_held_out_split(trainB, testB, force=b_rebuilt)
-
-    na = len(glob.glob(os.path.join(trainA, "*.jpg")))
-    nb = len(glob.glob(os.path.join(trainB, "*.jpg")))
     nta = len(glob.glob(os.path.join(testA, "*.jpg")))
     ntb = len(glob.glob(os.path.join(testB, "*.jpg")))
-    print(f"[CUT] trainA (game):  {na} frames  testA: {nta}")
-    print(f"[CUT] trainB (movie): {nb} frames  testB: {ntb}")
+    print(f"[CUT] testA (game):  {nta} frames")
+    print(f"[CUT] testB (movie): {ntb} frames")
     if nta == 0 or ntb == 0:
         raise RuntimeError(
             f"build_frame_dataset: test split is empty (testA={nta}, testB={ntb}). "

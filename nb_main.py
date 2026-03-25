@@ -132,7 +132,7 @@ RELOAD_TRAIN_SELECT = None
 RELOAD_TRAIN_SELECT = "20260325-105918"
 
 # -- 2.1 --
-RUN_FINETUNE_21 = True
+RUN_FINETUNE_21 = False
 RUN_TRANSLATE_VIDEO_21 = True
 
 # -- 2.2 --
@@ -203,7 +203,7 @@ else:
 # %% [markdown]
 # ## 1.2 Pose Classification (GCN)
 #
-# GCN training is an offline one-time step — it requires manually annotated labels
+# GCN training is an offline one-time step — it requires annotated labels
 # (run scripts/annotate.py, then scripts/train_gcn.py) and produces a committed
 # checkpoint at checkpoints/gcn_model.pt.
 #
@@ -241,10 +241,6 @@ else:
 # %% [markdown]
 # ## 1.3 Training Data Selection
 
-# %%
-# 1.3 — DINOv2 cluster-then-select
-# Embed patches with DINOv2 ViT-B/14, cluster per (class × domain) group,
-# select the centroid-nearest patch from each cluster.
 DINO_CKPT = os.path.join(PROJECT_ROOT, "models/dinov2_vitb14_reg4_pretrain.pt")
 TRAIN_SELECT_BUDGET = 2000  # total patches selected for CUT fine-tuning
 
@@ -268,12 +264,7 @@ print(f"[DATA] 1.3 selection: {len(train_game)} game  {len(train_movie)} movie")
 
 # %% [markdown]
 # ## 2.1 Image Model Deployment (baseline)
-#
-# Pipeline:
-#   1. Fine-tune pretrained CUT on full game/movie frames from 1.1 detection timestamps
-#   2. Apply to test video frame-by-frame
-#   3. Evaluate with FID, KID, LPIPS in both translation directions
- 
+
 # %%
 cut_dir  = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
 q2_1_dir = os.path.join(SAVE_DIR, "q2_1", SAVE_NAME)
@@ -287,6 +278,7 @@ if RUN_FINETUNE_21 or RUN_FINETUNE_22:
         [d["path"] for d in TRAIN_DATA],
         frame_dataroot,
         n_per_domain=1000,
+        build_train=RUN_FINETUNE_21,
     )
 
 if RUN_FINETUNE_21:
@@ -300,19 +292,6 @@ if RUN_FINETUNE_21:
 
 # %% [markdown]
 # ## 2.2 Enhanced model
-# 
-# 1. use selected patch data from 1.3
-# 2. keep the same pretrained CUT model as 2.1 (no retraining)
-# 3. use temporal enhancement (deferred for now)
-# 
-# Pipeline:
-#   1. Fine-tune from the same pretrained weights as 2.1 (NOT from 2.1's checkpoint),
-#      but on 1.3-selected human patches — tighter domain match to the human regions
-#      we actually care about translating
-#   2. For each test frame: detect humans (1.1), crop, translate with PATCH_MODEL,
-#      composite back onto the original frame (background untouched)
-#   3. EMA temporal blending between consecutive frames reduces flicker
-#   4. Evaluate with same metrics as 2.1 for a fair comparison
 
 # %%
 q2_2_dir = os.path.join(SAVE_DIR, "q2_2", SAVE_NAME)

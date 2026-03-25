@@ -11,6 +11,7 @@ cd /home2/nchw73/Year4/ACV_cswk
 uv sync
 source .venv/bin/activate
 
+echo "Job start time: $(date)"
 echo "Job running on node: $(hostname)"
 echo "------------------------------------------------------"
 python3 -c "import torch; print(f'CUDA Available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0)}')"
