@@ -463,31 +463,52 @@ def train_gcn(
     seed: int         = 42,
     save_plots: bool  = True,
     plot_dir: str     = None,
+    val_items: list[tuple[str, str]] | None = None,
 ) -> tuple:
     """
     Train PoseGCN on labelled_items = [(fname, class_string), ...].
-    Returns (model, per_class_val_acc). Saves training-curve plots when
+    Returns (model, per_class_val_acc | None). Saves training-curve plots when
     save_plots=True (plot_dir must be provided).
+
+    val_items : if provided, these are used as the validation set and all
+                labelled_items are used for training (no internal split).
+                Pass manual annotations here when training on rule-based labels
+                so that val accuracy is always measured on trusted labels.
+                If None and train_split < 1.0, an internal stratified split is
+                used (default for manual-label training).
+                If None and train_split == 1.0, no validation is performed and
+                per_class_val_acc is returned as None.
     """
-    # Stratified train/val split
     n_total_labelled = len(labelled_items)
     fnames_l = [f for f, _ in labelled_items if keypoints_dict.get(f) is not None]
     labels_l = [l for f, l in labelled_items if keypoints_dict.get(f) is not None]
     n_no_det = n_total_labelled - len(fnames_l)
 
-    f_train, f_val, l_train, l_val = train_test_split(
-        fnames_l, labels_l,
-        test_size   = 1 - train_split,
-        stratify    = labels_l,
-        random_state= seed,
-    )
+    if val_items is not None:
+        # External val set — train on all labelled_items
+        f_train, l_train = fnames_l, labels_l
+        fnames_v = [f for f, _ in val_items if keypoints_dict.get(f) is not None]
+        labels_v = [l for f, l in val_items if keypoints_dict.get(f) is not None]
+        f_val, l_val = fnames_v, labels_v
+        has_val = bool(f_val)
+    elif train_split < 1.0:
+        # Internal stratified split (default for manual-label training)
+        f_train, f_val, l_train, l_val = train_test_split(
+            fnames_l, labels_l,
+            test_size    = 1 - train_split,
+            stratify     = labels_l,
+            random_state = seed,
+        )
+        has_val = True
+    else:
+        # No validation set
+        f_train, l_train = fnames_l, labels_l
+        f_val, l_val = [], []
+        has_val = False
 
     train_ds = _LabelledDataset(list(zip(f_train, l_train)), keypoints_dict, augment=True)
-    val_ds   = _LabelledDataset(list(zip(f_val,   l_val)),   keypoints_dict, augment=False)
 
     # Oversample minority classes so they appear proportionally each epoch.
-    # label_counts computed over the full labelled set (train+val); we want
-    # weights that are inversely proportional to per-class frequency.
     label_counts = {cls: 0 for cls in CLASSES}
     for l in l_train:
         label_counts[l] += 1
@@ -500,14 +521,20 @@ def train_gcn(
     )
     train_loader = torch.utils.data.DataLoader(
         train_ds, batch_size=batch_size, sampler=sampler, collate_fn=_collate)
-    val_loader   = torch.utils.data.DataLoader(
-        val_ds,   batch_size=batch_size, shuffle=False, collate_fn=_collate)
 
-    print(f"[GCN] GCN training: {len(train_ds)} train  {len(val_ds)} val  "
-          f"({n_no_det} skipped - no detection)")
+    if has_val:
+        val_ds     = _LabelledDataset(list(zip(f_val, l_val)), keypoints_dict, augment=False)
+        val_loader = torch.utils.data.DataLoader(
+            val_ds, batch_size=batch_size, shuffle=False, collate_fn=_collate)
+        print(f"[GCN] GCN training: {len(train_ds)} train  {len(val_ds)} val  "
+              f"({n_no_det} skipped - no detection)")
+    else:
+        val_loader = None
+        print(f"[GCN] GCN training: {len(train_ds)} train  no val set  "
+              f"({n_no_det} skipped - no detection)")
 
-    # Class weights for the loss — computed over the full labelled pool
-    # (train+val) to keep the loss scale stable regardless of split.
+    # Class weights for the loss — computed over the full labelled pool to keep
+    # the loss scale stable regardless of split.
     full_label_counts = {cls: 0 for cls in CLASSES}
     for l in labels_l:
         full_label_counts[l] += 1
@@ -528,27 +555,43 @@ def train_gcn(
 
     for epoch in tqdm(range(1, epochs + 1), desc="Training GCN", unit="epoch"):
         tr_loss, tr_acc = _train_epoch(model, train_loader, optimiser, criterion, device)
-        va_loss, va_acc = _eval_epoch(model,  val_loader,   criterion, device)
         scheduler.step()
+
+        if val_loader is not None:
+            va_loss, va_acc = _eval_epoch(model, val_loader, criterion, device)
+            if va_acc > best_val_acc:
+                best_val_acc = va_acc
+                best_state   = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            va_loss, va_acc = float("nan"), float("nan")
+            # No val: keep updating best_state so we always have the final epoch.
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
         history.append({"epoch": epoch, "tr_loss": tr_loss, "va_loss": va_loss,
                         "tr_acc": tr_acc, "va_acc": va_acc})
 
-        if va_acc > best_val_acc:
-            best_val_acc = va_acc
-            best_state   = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-
         if epoch % 10 == 0 or epoch == epochs:
-            print(f"[GCN] epoch {epoch:>3}  "
-                  f"train loss {tr_loss:.4f}  acc {tr_acc:.3f}  |  "
-                  f"val loss {va_loss:.4f}  acc {va_acc:.3f}")
+            if val_loader is not None:
+                print(f"[GCN] epoch {epoch:>3}  "
+                      f"train loss {tr_loss:.4f}  acc {tr_acc:.3f}  |  "
+                      f"val loss {va_loss:.4f}  acc {va_acc:.3f}")
+            else:
+                print(f"[GCN] epoch {epoch:>3}  "
+                      f"train loss {tr_loss:.4f}  acc {tr_acc:.3f}")
 
     if save_plots and plot_dir:
         _save_training_plots(history, plot_dir)
 
-    print(f"[GCN] Best val accuracy: {best_val_acc:.3f}")
+    if val_loader is not None:
+        print(f"[GCN] Best val accuracy: {best_val_acc:.3f}")
+    else:
+        print("[GCN] No validation set — using final epoch model.")
     if best_state is None:
         raise ValueError("No checkpoint captured during training")
     model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
+
+    if val_loader is None:
+        return model, None
 
     # Per-class accuracy on val set to detect majority-class collapse.
     model.eval()
@@ -674,7 +717,7 @@ def save_gcn_results(
         pct = 100 * count / total if total else 0
         summary_lines.append(f"{cls:<25} {count:>6}  {pct:>5.1f}%")
 
-    if per_class_val_acc:
+    if per_class_val_acc is not None:
         summary_lines += [
             "",
             "Val accuracy per class",
@@ -690,6 +733,11 @@ def save_gcn_results(
                 summary_lines.append(f"{cls:<25} {correct:>7}  {n:>5}  {acc:>5.1f}%")
             else:
                 summary_lines.append(f"{cls:<25} {'—':>7}  {'—':>5}  {'—':>6}")
+    else:
+        summary_lines += [
+            "",
+            "Validation: no manual annotations available — val stats omitted.",
+        ]
 
     summary_text = "\n".join(summary_lines)
     print("[GCN] " + summary_text)
@@ -735,6 +783,8 @@ def run_gcn_pipeline(
     train_split: float = 0.8,
     seed: int          = 42,
     exclude_classes: list[str] | None = None,
+    # Validation
+    val_labelled_dir: str | None = None,
     # Keypoint cache
     force_reextract_keypoints: bool = False,
     # Plots
@@ -754,13 +804,18 @@ def run_gcn_pipeline(
         pose_model_path: Path to YOLO pose model weights.
         device         : "cuda" | "mps" | "cpu".
         exclude_classes: Optional class names to exclude from training labels.
+        val_labelled_dir: Path to a manual_annotated dir to use as the validation
+                         set.  For rule-based training this is the only trusted
+                         val source; if omitted, no validation is performed.
+                         For manual training the internal train_split is used
+                         (this param is ignored for cls_source="manual").
         force_reextract_keypoints: Re-run pose inference even if .npz exists.
         save_plots     : If True (default), save training_curves.png to save_dir.
 
     Returns:
         results           : { fname: class_string }  — for ALL patches
         summary           : { class_string: count }
-        per_class_val_acc : { cls: {correct, total, acc} } from training
+        per_class_val_acc : { cls: {correct, total, acc} } from training, or None
     """
     import glob
 
@@ -820,6 +875,23 @@ def run_gcn_pipeline(
     print(f"[GCN] Total patches to classify: {len(all_fnames)}")
 
     # --- 4. Train ---
+    # For rule-based training: val set must be manual annotations (or nothing).
+    # For manual training: use the internal stratified split.
+    val_items: list | None = None
+    eff_train_split = train_split
+    if cls_source == "rule":
+        eff_train_split = 1.0  # never split rule labels for val
+        if val_labelled_dir is not None:
+            ann_path = os.path.join(val_labelled_dir, "annotations.json")
+            if os.path.exists(ann_path):
+                val_labels = load_labels_from_manual_annotations(ann_path)
+                val_items = list(val_labels.items())
+                print(f"[GCN] Validation set: {len(val_items)} manual annotations "
+                      f"from {val_labelled_dir}")
+            else:
+                print(f"[GCN] Warning: annotations.json not found in {val_labelled_dir}"
+                      f" — skipping validation")
+
     labelled_items = list(labelled.items())
     model, per_class_val_acc = train_gcn(
         labelled_items = labelled_items,
@@ -831,8 +903,9 @@ def run_gcn_pipeline(
         weight_decay   = weight_decay,
         epochs         = epochs,
         batch_size     = batch_size,
-        train_split    = train_split,
+        train_split    = eff_train_split,
         seed           = seed,
+        val_items      = val_items,
         save_plots     = save_plots,
         plot_dir       = save_dir,
     )
