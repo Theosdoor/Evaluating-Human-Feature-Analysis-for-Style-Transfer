@@ -38,8 +38,11 @@ Usage
       --q22-21-dir  output/q2_2/.../results/test_g2m/fake_M \\
       --q22-22-dir  output/q2_2/.../enh_frames
       
-      
+2.1  
 python3 scripts/figure_select.py --q21-orig-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/real_A --q21-fake-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/fake_B
+
+2.2
+python3 scripts/figure_select.py --q22-orig-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/real_A --q22-21-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/fake_B --q22-22-dir output/q2_2/20260325-142517/enh_frames
 
 
 """
@@ -102,14 +105,16 @@ def _match_triples(
     fake21_paths: list[str],
     fake22_paths: list[str],
 ) -> list[tuple[str, str, str]]:
-    """Match originals, 2.1-fakes, 2.2-fakes by basename."""
-    by21 = {os.path.basename(p): p for p in fake21_paths}
-    by22 = {os.path.basename(p): p for p in fake22_paths}
+    """Match originals, 2.1-fakes, 2.2-fakes by basename (falls back to stem)."""
+    def _by_stem(paths):
+        return {os.path.splitext(os.path.basename(p))[0]: p for p in paths}
+    by21 = _by_stem(fake21_paths)
+    by22 = _by_stem(fake22_paths)
     triples = []
     for op in orig_paths:
-        name = os.path.basename(op)
-        if name in by21 and name in by22:
-            triples.append((op, by21[name], by22[name]))
+        stem = os.path.splitext(os.path.basename(op))[0]
+        if stem in by21 and stem in by22:
+            triples.append((op, by21[stem], by22[stem]))
     return triples
 
 
