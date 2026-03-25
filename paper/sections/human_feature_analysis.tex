@@ -12,7 +12,6 @@
 We use \texttt{YOLO26m} \cite{yolo26_ultralytics} to detect and extract 4000 human patches from the training videos: 2000 for each domain (game/movie). 
 Longer videos should be more diverse, so this budget is split proportional to length, so longer videos represent more of the dataset. 
 To prioritise diverse patches, we reject frames with inter-frame mean absolute difference below \(\tau_{sc}=8\) (near-static shots), and enforce a minimum spacing of 10 frames between YOLO calls.
-Candidate patches are scored by a weighted combination of detection confidence, relative bounding-box area and Laplacian sharpness (Table~\ref{tab:score_weights}). Greedy diversity sampling then enforces a 10-frame temporal gap per video source. Hyperparameters were empirically chosen.
 
 \begin{table}[h]
   \centering
@@ -28,22 +27,16 @@ Candidate patches are scored by a weighted combination of detection confidence, 
     \bottomrule
   \end{tabular}
 \end{table}
-[REMOVE THE GREEDY DIV SAMPLING? ITS CURRENTLY BROKEN BUT DON"T REALLY NEED IT]
-% ============================================================
-% TASK: adapt DL detection, propose lightweight useful-frame selection,
-%       submit 50 patch samples. Evaluate. 100 words.
-%
 
-%
-% KEY THINGS TO JUSTIFY:
-%   - Why greedy diversity? (prevents shot-repetition overfitting)
-%   - State the extraction thresholds as concrete numbers
-%
-% EVALUATION (fits in ≤20 words + a figure):
-%   - Quote the blur score range from _summary.txt: min 0.6, max 5351.5
-%
-% FIGURES:
+% figure 
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.6\linewidth]{figs/score_histogram.pdf}
+  \caption{Distribution of composite quality scores for the 3,687 selected patches. Scores combine YOLO detection confidence, relative patch size, and Laplacian sharpness (weights in Table~\ref{tab:score_weights}). The selected mean (0.50) lies above the mean of all 10,156 raw detections (0.43), suggesting that the scoring criterion prioritises selecting sharper, well-sized, high-confidence crops.}
+  \label{fig:score_hist}
+\end{figure}
 
+Candidate patches are scored as in Table \ref{tab:score_weights}, and Figure \ref{fig:score_hist} shows the results. Greedy diversity sampling then enforces a 10-frame temporal gap per video source. Hyperparameters were empirically chosen.
 
 
 \subsection{Classification}
@@ -56,14 +49,14 @@ Candidate patches are scored by a weighted combination of detection confidence, 
     \toprule
     Class & Count & \% \\
     \midrule
-    \texttt{Head-shoulder front} & 1241 & 31.0 \\
-    \texttt{Head-shoulder back} & 915 & 22.9 \\
-    \texttt{Full-body back} & 713 & 17.8 \\
-    \texttt{Full-body front} & 703 & 17.6 \\
-    \texttt{Others} & 244 & 6.1 \\
-    \texttt{No pose} & 184 & 4.6 \\
+    \texttt{Head-shoulder front} & 1172 & 31.8 \\
+    \texttt{Head-shoulder back} & 1024 & 27.8 \\
+    \texttt{Full-body back} & 700 & 19.0 \\
+    \texttt{Full-body front} & 435 & 11.8 \\
+    \texttt{Others} & 202 & 5.5 \\
+    \texttt{No pose} & 154 & 4.2 \\
     \midrule
-    Total & 4000 & 100.0 \\
+    Total & 3687 & 100.0 \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -96,11 +89,11 @@ Table \ref{tab:gcn_results} shows the results.
     \toprule
     Class & Correct & Total & Acc.\ (\%) \\
     \midrule
-    \texttt{Full-body front} & 54 & 72 & 75.0 \\
-    \texttt{Full-body back} & 18 & 19 & 94.7 \\
-    \texttt{Head-shoulder front} & 51 & 75 & 68.0 \\
-    \texttt{Head-shoulder back} & 18 & 27 & 66.7 \\
-    \texttt{Others} & 4 & 51 & 7.8 \\
+    \texttt{Full-body front} & 26 & 32 & 81.2 \\
+    \texttt{Full-body back} & 8 & 10 & 80.0 \\
+    \texttt{Head-shoulder front} & 19 & 36 & 52.8 \\
+    \texttt{Head-shoulder back} & 9 & 10 & 90.0 \\
+    \texttt{Others} & 0 & 18 & 0.0 \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -135,28 +128,18 @@ Table \ref{tab:gcn_results} shows the results.
 \end{table}
 
 GCN training labels are manually annotated using a custom tool (Figure \ref{fig:annot_tool}) seeded with rule-based keypoint heuristics (Table \ref{tab:rules}).
+
+TODO - reference the figures and talk about rule vs manual annot
+Figure \ref{fig:gcn_ablation}
+...
+
 Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the training set without requiring additional annotations.
 
 % ============================================================
 % TASK: classify 1.1 patches into 5 classes, submit 20/class.
 %       Explain, justify, evaluate. 100 words.
 %
-% SUGGESTED STRUCTURE:
-%   Sentence 1: define the 5 classes briefly.
-%     "We define full-body as both hip keypoints visible with torso,
-%      head-and-shoulder as upper body only, front/back by nose
-%      visibility, and others for partial/occluded/non-human crops."
-%   Sentence 4: labels.
-%     "Training labels are obtained from manual annotation of \(\sim\)600
-%      patches using a custom Flask tool seeded with rule-based keypoint
-%      heuristics."
-%   Sentence 5: augmentation.
-%     "Horizontal flip augmentation (swapping symmetric keypoint pairs)
-%      doubles the training set without requiring additional annotations."
-%   Sentence 6-7: result (refer to table/figure).
-%     "Val accuracy: full-body-back 94.7\%, full-body-front 72.2\%,
-%      head-shoulder-back 70.4\%, head-shoulder-front 65.3\%;
-%      `others' accuracy is low (9.8\%), discussed below."
+
 %
 % KEY THINGS TO JUSTIFY:
 %   - Why GCN over MLP/SVM? Pose is a graph structure — edges encode
@@ -177,6 +160,15 @@ Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the tra
 
 
 \subsection{Training Data Selection}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figs/dino_umap.png}
+  \caption{UMAP projection of DINOv2 embeddings for all training patches,
+           coloured by pose class (left) and domain (right).}
+  \label{fig:umap}
+\end{figure}
+
 % ============================================================
 % TASK: select most useful patches for style-transfer training.
 %       Own observations/insights required. Submit 50 samples. 100 words.
@@ -223,24 +215,11 @@ Horizontal flip augmentation (swapping symmetric keypoint pairs) doubles the tra
 %                       variation, justifying embedding-based deduplication."
 %             This is your key empirical evidence for 1.3.
 %
-%   Fig 3b — 50 selected sample patches (required submission).
-%             Sample randomly from train_game + train_movie output of
-%             select_with_dino_clustering.
-%             Save to: paper/figs/selected_patches_sample.pdf
 %
 %   Optional: 2×2 grid showing a near-duplicate cluster (before deduplication)
 %             vs. the selected centroid patch. Powerful visual argument.
 %             Save to: paper/figs/dedup_example.pdf
 %
-% LATEX SKELETON:
-% \begin{figure}[t]
-%   \centering
-%   \includegraphics[width=\linewidth]{figs/dino_umap.png}
-%   \caption{UMAP projection of DINOv2 embeddings for all training patches,
-%            coloured by pose class (left) and domain (right). Clear clustering
-%            motivates diversity-preserving selection.}
-%   \label{fig:umap}
-% \end{figure}
 
 % ---- UMAP ANALYSIS NOTES (incorporate into prose) ----
 %
