@@ -32,26 +32,31 @@
 
 \begin{table}[h]
   \centering
-  \caption{CUT full-frame translation metrics (2.1).
-           FID and KID measure distance from the translated output
-           distribution to the real target-domain distribution (lower
-           = closer to target). LPIPS measures perceptual distance
-           between translated output and the original input frame
-           (lower = less change applied). All metrics: lower is considered better.}
-  \label{tab:metrics21}
-  \begin{tabular}{lrrr}
+  \caption{Metric comparison between 2.1 (full-frame CUT) and 2.2
+           (patch CUT + ST-GCN) for both translation directions.
+           FID/KID measure distance to the target-domain distribution;
+           LPIPS measures perceptual change versus the input.
+           For all metrics, lower is considered better.
+           Bold indicates the better score per direction.}
+  \label{tab:metrics}
+  \begin{tabular}{llrrr}
     \toprule
-    Direction & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
+    Model & Direction & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
     \midrule
-    Game $\to$ Movie (AtoB) & 239.4 & 0.085 & 0.391 \\
-    Movie $\to$ Game (BtoA) & 271.3 & 0.105 & 0.286 \\
+    \multirow{2}{*}{2.1 Full-frame CUT}
+      & Game $\to$ Movie & 239.4 & 0.085 & 0.391 \\
+      & Movie $\to$ Game & 271.3 & 0.105 & 0.286 \\
+    \midrule
+    \multirow{2}{*}{2.2 Patch CUT + ST-GCN}
+      & Game $\to$ Movie & \textbf{186.3} & \textbf{0.063} & \textbf{0.317} \\
+      & Movie $\to$ Game & \textbf{201.5} & \textbf{0.083} & \textbf{0.271} \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 For our baseline, we use a pre-trained \texttt{horse2zebra} Contrastive Unpaired Translation (CUT) model \cite{park2020cut} (see \url{https://github.com/taesungp/contrastive-unpaired-translation}), and fine-tune it on full frames from the training videos (1000 frames per domain; 2000 in total). The experimental setup is shown in Table \ref{tab:setup}. CUT uses multilayer, patchwise contrastive loss which is more effective than cycle consistency loss (e.g. CycleGAN \cite{CycleGAN2017, isola2017image}), and CUT has only one generator and one discriminator which makes it $\sim$50\% more efficient than CycleGAN \cite{park2020cut}.
 
-Table \ref{tab:metrics21} shows FID, KID \cite{parmar2021cleanfid} and LPIPS \cite{zhang2018perceptual} for both translation directions. Movie $\to$ game translation performs worse for FID (271.3 vs 239.4) and KID (0.105 vs 0.085), which suggests that the opposite direction may be easier to learn, but the better LPIPS score (0.286 vs 0.391) suggests that the model more aggressively restyles in the game $\to$ movie direction.
+Table \ref{tab:metrics} shows FID, KID \cite{parmar2021cleanfid} and LPIPS \cite{zhang2018perceptual} for both translation directions. Movie $\to$ game translation performs worse for FID (271.3 vs 239.4) and KID (0.105 vs 0.085), which suggests that the opposite direction may be easier to learn, but the better LPIPS score (0.286 vs 0.391) suggests that the model more aggressively restyles in the game $\to$ movie direction.
 
 Figures \ref{fig:q21_failure} and \ref{fig:q21_success} show that game $\to$ movie transfer results in heavy blurring and a green tinge, which may be an artifact from the \texttt{horse2zebra} initialisation.
 
@@ -64,7 +69,7 @@ The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not h
 \newpage
 \begin{figure}
   \centering
-  \includegraphics[width=0.55\linewidth]{figs/q21_failure.png}
+  \includegraphics[width=0.55\linewidth]{figs/q21_failure.pdf}
   \caption{Failures using the baseline method.}
   \label{fig:q21_failure}
 \end{figure}
@@ -72,7 +77,7 @@ The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not h
 \newpage
 \begin{figure}
   \centering
-  \includegraphics[width=0.55\linewidth]{figs/q21_success.png}
+  \includegraphics[width=0.55\linewidth]{figs/q21_success.pdf}
   \caption{Successes using the baseline method.}
   \label{fig:q21_success}
 \end{figure}
@@ -145,6 +150,8 @@ The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not h
 % ============================================================
 \subsection{Local (Temporal) Enhancement}
 
+
+
 \newpage
 \begin{figure}
   \centering
@@ -153,23 +160,7 @@ The pre-trained \texttt{horse2zebra} weights are tuned for animal textures not h
   \label{fig:q22_compare}
 \end{figure}
 
-\begin{table}[t]
-  \centering
-  \caption{Metric comparison between 2.1 and
-           2.2 for
-           game$\to$movie translation. FID/KID measure distance to the
-           target-domain distribution; LPIPS measures perceptual change
-           versus input. All metrics: lower is better.}
-  \label{tab:metrics22}
-  \begin{tabular}{lrrr}
-    \toprule
-    Model & FID\,$\downarrow$ & KID\,$\downarrow$ & LPIPS\,$\downarrow$ \\
-    \midrule
-    2.1 Full-frame CUT          & 239.4 & 0.085 & 0.391 \\
-    2.2 Patch CUT + ST-GCN      & \textbf{186.3} & \textbf{0.063} & \textbf{0.317} \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+
 
 % ============================================================
 % TASK: improve 2.1 using local (patch) methods and/or temporal approaches.
