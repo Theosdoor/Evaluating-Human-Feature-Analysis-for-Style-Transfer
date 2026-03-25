@@ -340,3 +340,14 @@ _mod.run_sampling(
     dir_13=train_select_save_path,
     project_root=PROJECT_ROOT,
 )
+
+# %% [markdown]
+# ## Other scripts that generate files
+#
+# The following are **not** run automatically — see each script's docstring for usage:
+#
+# | Script | Output |
+# |--------|--------|
+# | `scripts/train_gcn.py` | GCN checkpoint (`checkpoints/gcn_model_*.pt`) and training curves |
+# | `scripts/nb_figures.py` | Paper figures (`figures/`, `paper/figs/`) — score histogram, UMAP, annotation tool screenshot, etc. |
+# | `scripts/figure_select.py` | Q2.1 success/failure figures and Q2.2 comparison figures for the paper |
