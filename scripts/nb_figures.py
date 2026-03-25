@@ -27,7 +27,7 @@ from plotly.subplots import make_subplots
 
 ROOT = pathlib.Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
-from src.data import load_train_split, CLASSES, _load_dino_model, _embed_patches
+from src.data import load_train_split, CLASSES, _load_dino_model, _embed_patches, _collect_patches, _domain_from_path
 
 FIGURES_DIR = ROOT / "figures"
 FIGURES_DIR.mkdir(exist_ok=True)
@@ -96,37 +96,18 @@ plt.show()
 
 # %%
 # ---------------------------------------------------------------------------
-# 1.3 — Interactive UMAP (Plotly, self-contained HTML)
-#
-# Source : output/train_select/<RUN_ID>/train_split.json
-# Save to: figures/dino_umap_<RUN_ID>_interactive.html
-#
-# Hover over points to see class / domain / filename.
-# Click a point to show the patch image in a floating panel.
+# 1.3 — Interactive UMAP helpers (shared by both cells below)
 # ---------------------------------------------------------------------------
 
-RUN_ID = "20260325-105918"
+RUN_ID         = "20260325-105918"
+CLASSIFY_RUN_ID = "20260325-105918-1"  # classification dir for "all patches" view
 
-# --- load split -------------------------------------------------------
-SPLIT_DIR = ROOT / "output/train_select" / RUN_ID
-game_paths, movie_paths = load_train_split(str(SPLIT_DIR))
+cls_order  = [c for c in CLASSES if c != "others"] + ["others"]
+PALETTE    = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#aaaaaa"]
+CLS_COLORS = {c: PALETTE[i % len(PALETTE)] for i, c in enumerate(cls_order)}
+DOM_COLORS = {"game": "#17becf", "movie": "#bcbd22"}  # distinct from class palette
 
-all_paths = game_paths + movie_paths
-domains   = ["game"] * len(game_paths) + ["movie"] * len(movie_paths)
-labels    = [pathlib.Path(p).parent.name for p in all_paths]
-print(f"Loaded {len(game_paths)} game + {len(movie_paths)} movie patches")
 
-# --- DINOv2 embed -----------------------------------------------------
-model = _load_dino_model(str(DINO_CKPT), DEVICE)
-embs  = _embed_patches(all_paths, model, DEVICE)
-del model
-torch.cuda.empty_cache() if DEVICE == "cuda" else None
-
-# --- UMAP -------------------------------------------------------------
-print("[DATA] Computing UMAP projection...")
-xy = umap_lib.UMAP(n_components=2, random_state=42).fit_transform(embs)
-
-# --- encode click images (128×128 JPEG) --------------------------------
 def _b64(path, size=(128, 128), quality=65):
     img = Image.open(path).convert("RGB")
     img.thumbnail(size, Image.LANCZOS)
@@ -134,82 +115,68 @@ def _b64(path, size=(128, 128), quality=65):
     img.save(buf, format="JPEG", quality=quality)
     return base64.b64encode(buf.getvalue()).decode()
 
-print("[DATA] Encoding patch thumbnails...")
-click_b64 = [_b64(p) for p in tqdm(all_paths, unit="img")]
 
-# --- colour palettes --------------------------------------------------
-cls_order  = [c for c in CLASSES if c != "others"] + ["others"]
-PALETTE    = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#aaaaaa"]
-cls_colors = {c: PALETTE[i % len(PALETTE)] for i, c in enumerate(cls_order)}
-dom_colors = {"game": "#1f77b4", "movie": "#ff7f0e"}
+def _build_umap_html(all_paths, labels, domains, title, run_id):
+    """Embed, UMAP-project, and return a self-contained interactive HTML string."""
+    model = _load_dino_model(str(DINO_CKPT), DEVICE)
+    embs  = _embed_patches(all_paths, model, DEVICE)
+    del model
+    if DEVICE == "cuda":
+        torch.cuda.empty_cache()
 
-# --- build figure -----------------------------------------------------
-fig = make_subplots(
-    rows=1, cols=2,
-    subplot_titles=["By class", "By domain"],
-    horizontal_spacing=0.04,
-)
+    print("[DATA] Computing UMAP projection...")
+    xy = umap_lib.UMAP(n_components=2, random_state=42).fit_transform(embs)
 
-_ht = (
-    "<b>%{customdata[1]}</b> · %{customdata[2]}<br>"
-    "<span style='font-size:10px;color:#666'>%{customdata[3]}</span>"
-    "<extra></extra>"
-)
+    print("[DATA] Encoding patch thumbnails...")
+    click_b64 = [_b64(p) for p in tqdm(all_paths, unit="img")]
 
-# panel 1 — by class
-for cls in cls_order:
-    mask = [i for i, l in enumerate(labels) if l == cls]
-    if not mask:
-        continue
-    fig.add_trace(go.Scatter(
-        x=xy[mask, 0], y=xy[mask, 1],
-        mode="markers",
-        name=cls,
-        marker=dict(color=cls_colors[cls], size=4, opacity=0.7),
-        customdata=[[i, labels[i], domains[i], pathlib.Path(all_paths[i]).name]
-                    for i in mask],
-        hovertemplate=_ht,
-        legendgroup=cls,
-        showlegend=True,
-    ), row=1, col=1)
+    _ht = (
+        "<b>%{customdata[1]}</b> · %{customdata[2]}<br>"
+        "<span style='font-size:10px;color:#666'>%{customdata[3]}</span>"
+        "<extra></extra>"
+    )
+    fig = make_subplots(rows=1, cols=2, subplot_titles=["By class", "By domain"],
+                        horizontal_spacing=0.04)
 
-# panel 2 — by domain
-for dom in ["game", "movie"]:
-    mask = [i for i, d in enumerate(domains) if d == dom]
-    if not mask:
-        continue
-    fig.add_trace(go.Scatter(
-        x=xy[mask, 0], y=xy[mask, 1],
-        mode="markers",
-        name=dom,
-        marker=dict(color=dom_colors[dom], size=4, opacity=0.7),
-        customdata=[[i, labels[i], domains[i], pathlib.Path(all_paths[i]).name]
-                    for i in mask],
-        hovertemplate=_ht,
-        legendgroup=dom,
-        showlegend=True,
-    ), row=1, col=2)
+    for cls in cls_order:
+        mask = [i for i, l in enumerate(labels) if l == cls]
+        if not mask:
+            continue
+        fig.add_trace(go.Scatter(
+            x=xy[mask, 0], y=xy[mask, 1], mode="markers", name=cls,
+            marker=dict(color=CLS_COLORS[cls], size=4, opacity=0.7),
+            customdata=[[i, labels[i], domains[i], pathlib.Path(all_paths[i]).name] for i in mask],
+            hovertemplate=_ht, legendgroup=cls, legend="legend", showlegend=True,
+        ), row=1, col=1)
 
-fig.update_layout(
-    title=dict(text=f"DINOv2 patch embeddings — {RUN_ID}", font=dict(size=14)),
-    width=1400, height=680,
-    plot_bgcolor="#f8f8f8",
-    paper_bgcolor="#ffffff",
-    legend=dict(itemsizing="constant"),
-    hoverlabel=dict(bgcolor="white", font_size=12),
-)
-fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
-fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
+    for dom in ["game", "movie"]:
+        mask = [i for i, d in enumerate(domains) if d == dom]
+        if not mask:
+            continue
+        fig.add_trace(go.Scatter(
+            x=xy[mask, 0], y=xy[mask, 1], mode="markers", name=dom,
+            marker=dict(color=DOM_COLORS[dom], size=4, opacity=0.7),
+            customdata=[[i, labels[i], domains[i], pathlib.Path(all_paths[i]).name] for i in mask],
+            hovertemplate=_ht, legendgroup=dom, legend="legend2", showlegend=True,
+        ), row=1, col=2)
 
-# --- assemble self-contained HTML -------------------------------------
-plot_div  = fig.to_html(include_plotlyjs="cdn", full_html=False, div_id="umap-plot")
-images_js = json.dumps(click_b64)
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14)),
+        width=1400, height=680,
+        plot_bgcolor="#f8f8f8", paper_bgcolor="#ffffff",
+        legend=dict(itemsizing="constant", x=0.02, y=0.98, xanchor="left", yanchor="top",
+                    bgcolor="rgba(255,255,255,0.8)", bordercolor="#cccccc", borderwidth=1),
+        legend2=dict(itemsizing="constant", x=0.98, y=0.98, xanchor="right", yanchor="top",
+                     bgcolor="rgba(255,255,255,0.8)", bordercolor="#cccccc", borderwidth=1),
+        hoverlabel=dict(bgcolor="white", font_size=12),
+    )
+    fig.update_xaxes(showticklabels=False, showgrid=False, zeroline=False)
+    fig.update_yaxes(showticklabels=False, showgrid=False, zeroline=False)
 
-html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>DINO UMAP — {RUN_ID}</title>
+    plot_div  = fig.to_html(include_plotlyjs="cdn", full_html=False, div_id="umap-plot")
+    images_js = json.dumps(click_b64)
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>DINO UMAP — {run_id}</title>
 <style>
   body {{ margin: 0; padding: 10px; font-family: sans-serif; background: #f0f0f0; }}
   #img-panel {{
@@ -224,9 +191,7 @@ html = f"""<!DOCTYPE html>
     margin-top: 7px; font-size: 11px; cursor: pointer;
     border: 1px solid #bbb; border-radius: 4px; padding: 2px 10px; background: #f5f5f5;
   }}
-</style>
-</head>
-<body>
+</style></head><body>
 {plot_div}
 <div id="img-panel">
   <img id="img-display" src="" alt="patch" />
@@ -241,11 +206,44 @@ document.getElementById("umap-plot").on("plotly_click", function(data) {{
   document.getElementById("img-meta").textContent = cd[1] + " · " + cd[2] + "  |  " + cd[3];
   document.getElementById("img-panel").style.display = "block";
 }});
-</script>
-</body>
-</html>"""
+</script></body></html>"""
 
-out_path = FIGURES_DIR / f"dino_umap_{RUN_ID}_interactive.html"
+# %%
+# ---------------------------------------------------------------------------
+# 1.3a — UMAP: selected training patches (train_split.json)
+# ---------------------------------------------------------------------------
+
+SPLIT_DIR = ROOT / "output/train_select" / RUN_ID
+game_paths, movie_paths = load_train_split(str(SPLIT_DIR))
+sel_paths   = game_paths + movie_paths
+sel_domains = ["game"] * len(game_paths) + ["movie"] * len(movie_paths)
+sel_labels  = [pathlib.Path(p).parent.name for p in sel_paths]
+print(f"Selected: {len(game_paths)} game + {len(movie_paths)} movie patches")
+
+html = _build_umap_html(sel_paths, sel_labels, sel_domains,
+                        f"DINOv2 patch embeddings — selected ({RUN_ID})", RUN_ID)
+out_path = FIGURES_DIR / f"dino_umap_{RUN_ID}_selected.html"
+out_path.write_text(html)
+print(f"Saved: {out_path}")
+
+# %%
+# ---------------------------------------------------------------------------
+# 1.3b — UMAP: all classified patches (pre-selection, matches nb_main view)
+# ---------------------------------------------------------------------------
+
+cls_dir    = ROOT / "output/init_classifications" / CLASSIFY_RUN_ID
+all_patch_dict = _collect_patches(str(cls_dir))
+all_paths, all_labels, all_domains = [], [], []
+for cls in cls_order:
+    for p in all_patch_dict.get(cls, []):
+        all_paths.append(p)
+        all_labels.append(cls)
+        all_domains.append(_domain_from_path(p))
+print(f"All patches: {len(all_paths)} from {CLASSIFY_RUN_ID}")
+
+html = _build_umap_html(all_paths, all_labels, all_domains,
+                        f"DINOv2 patch embeddings — all patches ({CLASSIFY_RUN_ID})", CLASSIFY_RUN_ID)
+out_path = FIGURES_DIR / f"dino_umap_{CLASSIFY_RUN_ID}_all.html"
 out_path.write_text(html)
 print(f"Saved: {out_path}")
 
