@@ -13,7 +13,7 @@ Keys (in browser)
   s / S        (2.1 tab) success
   f / F        (2.1 tab) failure
   y / Y        (2.2 tab) select
-  Space / →    skip current
+  Space / →    jump forward N frames (default 30; set with --skip-interval)
   b / B        go back one
   q / Q        export figures and open export summary
 
@@ -28,9 +28,7 @@ Output
 Usage
 -----
   # Minimal — auto-discovers images from standard CUT output layout:
-  python3 scripts/figure_select.py \\
-      --q21-dir output/q2_1/20260325-115117 \\
-      --q22-dir output/q2_2/20260325-115117
+  python3 scripts/figure_select.py --q21-dir output/q2_1/20260325-120108 --q22-dir output/q2_2/20260325-115117
 
   # Override individual image dirs if layout differs:
   python3 scripts/figure_select.py \\
@@ -39,6 +37,11 @@ Usage
       --q22-orig-dir output/q2_2/.../cut_data/testA \\
       --q22-21-dir  output/q2_2/.../results/test_g2m/fake_M \\
       --q22-22-dir  output/q2_2/.../enh_frames
+      
+      
+python3 scripts/figure_select.py --q21-orig-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/real_A --q21-fake-dir output/q2_1/20260325-120108/results/test_g2m/cut_raw/cut_finetuned_fullframe/train_latest/images/fake_B
+
+
 """
 
 import argparse
@@ -287,6 +290,11 @@ class SelectionState:
                 del self._sel[tab][prev]
                 self._save()
 
+    def jump(self, tab: str, n: int):
+        """Advance index by n without recording any label."""
+        total = len(self.pairs_21) if tab == "q21" else len(self.triples_22)
+        self._idx[tab] = min(self._idx[tab] + n, total)
+
     # ── Export ───────────────────────────────────────────────────────────────
 
     def export(self, cell_w_21=512, cell_h_21=288, cell_wh_22=256) -> dict[str, str]:
@@ -485,8 +493,8 @@ HTML = r"""
       <button class="btn failure" onclick="annotate('failure')">
         <span class="key-badge">F</span> Failure
       </button>
-      <button class="btn skip"    onclick="annotate('skip')">
-        <span class="key-badge">Space</span> Skip
+      <button class="btn skip"    onclick="jumpForward()">
+        <span class="key-badge">Space</span> Skip +{{ skip_interval }}
       </button>
       <button class="btn"         onclick="goBack()">
         <span class="key-badge">B</span> Back
@@ -496,8 +504,8 @@ HTML = r"""
       <button class="btn select" onclick="annotate('selected')">
         <span class="key-badge">Y</span> Select
       </button>
-      <button class="btn skip"   onclick="annotate('skip')">
-        <span class="key-badge">Space</span> Skip
+      <button class="btn skip"   onclick="jumpForward()">
+        <span class="key-badge">Space</span> Skip +{{ skip_interval }}
       </button>
       <button class="btn"        onclick="goBack()">
         <span class="key-badge">B</span> Back
@@ -530,6 +538,7 @@ HTML = r"""
 let currentTab = 'q21';
 let state = { q21: { idx: 0, total: 0 }, q22: { idx: 0, total: 0 } };
 let toastTimer = null;
+const skipInterval = {{ skip_interval }};
 
 // ---------------------------------------------------------------------------
 // Tab switching
@@ -639,6 +648,19 @@ function goBack() {
   .then(() => loadCurrent());
 }
 
+function jumpForward() {
+  fetch('/api/jump', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ tab: currentTab, n: skipInterval }),
+  })
+  .then(r => r.json())
+  .then(() => {
+    showToast(`+${skipInterval}`, 400);
+    loadCurrent();
+  });
+}
+
 function exportFigures() {
   fetch('/api/export', { method: 'POST' })
     .then(r => r.json())
@@ -689,7 +711,7 @@ document.addEventListener('keydown', e => {
     if (k === 'y' || k === 'Y') { annotate('selected'); return; }
     if (k === 'n' || k === 'N') { annotate('skip');    return; }
   }
-  if (k === ' ' || k === 'ArrowRight') { e.preventDefault(); annotate('skip'); return; }
+  if (k === ' ' || k === 'ArrowRight') { e.preventDefault(); jumpForward(); return; }
   if (k === 'b' || k === 'B') { goBack(); return; }
   if (k === 'q' || k === 'Q') { exportFigures(); return; }
 });
@@ -709,7 +731,7 @@ loadCurrent();
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    return render_template_string(HTML, skip_interval=STATE.skip_interval if STATE else 30)
 
 
 @app.route("/api/state/<tab>")
@@ -767,7 +789,7 @@ def api_image(tab, idx, slot):
         _, buf = cv2.imencode(".jpg", placeholder)
         return buf.tobytes(), 200, {"Content-Type": "image/jpeg"}
 
-    return send_file(path, mimetype="image/jpeg" if path.lower().endswith(".jpg") else "image/png")
+    return send_file(os.path.abspath(path), mimetype="image/jpeg" if path.lower().endswith(".jpg") else "image/png")
 
 
 @app.route("/api/annotate", methods=["POST"])
@@ -791,6 +813,17 @@ def api_back():
         return jsonify({"error": "not ready"}), 500
     tab = request.get_json().get("tab")
     STATE.go_back(tab)
+    return jsonify({"status": "ok", "idx": STATE.current_idx(tab)})
+
+
+@app.route("/api/jump", methods=["POST"])
+def api_jump():
+    if STATE is None:
+        return jsonify({"error": "not ready"}), 500
+    data = request.get_json()
+    tab = data.get("tab")
+    n   = int(data.get("n", STATE.skip_interval))
+    STATE.jump(tab, n)
     return jsonify({"status": "ok", "idx": STATE.current_idx(tab)})
 
 
@@ -852,6 +885,8 @@ def main():
     parser.add_argument("--sel-dir", default=os.path.join(PROJECT_ROOT, "output", "figure_select"),
                         help="Directory for selections JSON (default: output/figure_select)")
     parser.add_argument("--port", type=int, default=5001)
+    parser.add_argument("--skip-interval", type=int, default=30,
+                        help="Number of frames to jump forward on Space/→ (default: 30)")
     args = parser.parse_args()
 
     # Discover dirs
@@ -882,6 +917,8 @@ def main():
 
     json_path = os.path.join(args.sel_dir, "selections.json")
     STATE = SelectionState(pairs_21, triples_22, json_path, args.out_dir)
+    STATE.skip_interval = args.skip_interval
+    print(f"[figsel] Skip interval: {args.skip_interval} frames (Space/→)")
 
     app.run(host="0.0.0.0", port=args.port, debug=False, threaded=True)
 

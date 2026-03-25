@@ -267,7 +267,7 @@ print(f"[DATA] 1.3 selection: {len(train_game)} game  {len(train_movie)} movie")
 
 # %%
 cut_dir  = os.path.join(PROJECT_ROOT, "external/contrastive-unpaired-translation")
-q2_1_dir = os.path.join(SAVE_DIR, "q2_1", SAVE_NAME)
+q2_1_dir = os.path.join(SAVE_DIR, "q2_1") # fixed, overwrite
 
 ensure_pretrained_models(cut_dir)
 
