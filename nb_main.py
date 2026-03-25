@@ -1,4 +1,4 @@
-# %%
+# %% [markdown]
 # ACV CSWK 2026 - Main Notebook
 
 # %%
@@ -132,7 +132,7 @@ RELOAD_TRAIN_SELECT = None
 RELOAD_TRAIN_SELECT = "20260325-105918"
 
 # -- 2.1 --
-RUN_FINETUNE_21 = False
+RUN_FINETUNE_21 = True
 RUN_TRANSLATE_VIDEO_21 = True
 
 # -- 2.2 --
