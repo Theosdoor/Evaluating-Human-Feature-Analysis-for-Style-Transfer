@@ -30,6 +30,19 @@ from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
+# Filesystem helpers
+# ---------------------------------------------------------------------------
+
+def rm(*paths: str) -> None:
+    """Delete directories/files, silently skip if absent."""
+    for p in paths:
+        if os.path.isdir(p):
+            shutil.rmtree(p)
+        elif os.path.isfile(p):
+            os.remove(p)
+
+
+# ---------------------------------------------------------------------------
 # Shared constants
 # ---------------------------------------------------------------------------
 

@@ -477,6 +477,61 @@ def evaluate_translation(
     return metrics
 
 
+def run_q2_1(
+    cut_dir: str,
+    pretrained_exp: str,
+    finetune_exp: str,
+    frame_dataroot: str,
+    trainA: str,
+    trainB: str,
+    testA: str,
+    testB: str,
+    out_dir: str,
+    device: str,
+    n_epochs: int = 4,
+    n_epochs_decay: int = 1,
+    batch_size: int = 4,
+    test_path: str | None = None,
+    gpu_label: str = "NVIDIA GeForce RTX 2080 Ti",
+) -> dict:
+    """
+    Full 2.1 pipeline: fine-tune CUT on full frames, evaluate in both
+    directions, optionally translate the test video.
+    Cleans up training frames and inference results on completion.
+    testA/testB are intentionally kept — caller deletes frame_dataroot
+    after 2.2 is also done.
+
+    Returns metrics dict {"game→movie": {...}, "movie→game": {...}}.
+    """
+    n_train_game  = len(glob.glob(os.path.join(trainA, "*.jpg")))
+    n_train_movie = len(glob.glob(os.path.join(trainB, "*.jpg")))
+
+    training_info = finetune_cut(
+        cut_dir, pretrained_exp, finetune_exp, frame_dataroot, device,
+        n_epochs=n_epochs, n_epochs_decay=n_epochs_decay, batch_size=batch_size,
+    )
+    shutil.rmtree(trainA, ignore_errors=True)
+    shutil.rmtree(trainB, ignore_errors=True)
+
+    config = {
+        **training_info,
+        "n_train_game":  n_train_game,
+        "n_train_movie": n_train_movie,
+        "gpu": gpu_label,
+    }
+    metrics = evaluate_translation(
+        cut_dir, finetune_exp, testA, testB, out_dir, device, tag="2.1", config=config,
+    )
+    shutil.rmtree(os.path.join(out_dir, "results"), ignore_errors=True)
+
+    if test_path:
+        translate_test_video(cut_dir, finetune_exp, test_path, out_dir, device)
+        for d in ("test_frames", "test_infer_dataroot"):
+            shutil.rmtree(os.path.join(out_dir, d), ignore_errors=True)
+
+    return metrics
+
+
 def _vgg_features(
     image_paths: list[str],
     device: str,

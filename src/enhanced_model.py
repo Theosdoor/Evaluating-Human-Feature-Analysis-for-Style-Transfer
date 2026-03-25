@@ -68,6 +68,7 @@ def finetune_cut_patches(
     device: str,
     n_epochs: int = 20,
     n_epochs_decay: int = 10,
+    batch_size: int = 4,
 ) -> dict:
     """
     Fine-tune a CUT checkpoint on the human patches selected in Q1.3.
@@ -125,6 +126,7 @@ def finetune_cut_patches(
         device         = device,
         n_epochs       = n_epochs,
         n_epochs_decay = n_epochs_decay,
+        batch_size     = batch_size,
     )
 
     return training_info
@@ -300,6 +302,99 @@ def translate_test_video_enhanced(
     )
 
     return write_video(composited_paths, os.path.join(save_dir, output_name), fps)
+
+
+# ---------------------------------------------------------------------------
+# Top-level Q2.2 pipeline runner
+# ---------------------------------------------------------------------------
+
+def run_q2_2(
+    cut_dir: str,
+    pretrained_exp: str,
+    finetune_exp: str,
+    train_game: list[str],
+    train_movie: list[str],
+    testA: str,
+    testB: str,
+    out_dir: str,
+    device: str,
+    n_epochs: int = 4,
+    n_epochs_decay: int = 1,
+    batch_size: int = 4,
+    test_path: str | None = None,
+    yolo_model=None,
+    pose_model_path: str | None = None,
+    gcn_save_path: str | None = None,
+    exclude_classes: list[str] | None = None,
+    blend_alpha: float = 0.3,
+    blur_threshold: float = 10.0,
+    gpu_label: str = "NVIDIA GeForce RTX 2080 Ti",
+) -> dict:
+    """
+    Full 2.2 pipeline: fine-tune CUT on 1.3 patches, evaluate in both
+    directions, optionally translate the test video with patch compositing
+    and EMA temporal blending.
+    Cleans up large intermediates on completion.
+
+    Returns metrics dict {"game→movie": {...}, "movie→game": {...}}.
+    """
+    from src.baseline_model import evaluate_translation
+
+    training_info = finetune_cut_patches(
+        cut_dir, pretrained_exp, finetune_exp,
+        train_game, train_movie, out_dir, device,
+        n_epochs=n_epochs, n_epochs_decay=n_epochs_decay, batch_size=batch_size,
+    )
+
+    config = {
+        **training_info,
+        "n_train_game":  len(train_game),
+        "n_train_movie": len(train_movie),
+        "gpu": gpu_label,
+        "blend_alpha": blend_alpha,
+        "feather_px": 10,
+        "patch_size": 256,
+    }
+    metrics = evaluate_translation(
+        cut_dir, finetune_exp, testA, testB, out_dir, device, tag="2.2", config=config,
+    )
+    shutil.rmtree(os.path.join(out_dir, "patch_dataroot"), ignore_errors=True)
+    shutil.rmtree(os.path.join(out_dir, "results"),        ignore_errors=True)
+
+    if test_path and yolo_model is not None:
+        enhanced_video = translate_test_video_enhanced(
+            cut_dir, finetune_exp, test_path, out_dir, device,
+            yolo_model=yolo_model,
+            pose_model_path=pose_model_path,
+            gcn_save_path=gcn_save_path,
+            exclude_classes=exclude_classes,
+            blend_alpha=blend_alpha,
+            blur_threshold=blur_threshold,
+        )
+        print(f"[ENH] Enhanced video → {enhanced_video}")
+
+        # Bbox FID — use real movie patches from patch_dataroot/trainB before cleanup
+        patch_dataroot_trainB = os.path.join(out_dir, "patch_dataroot", "trainB")
+        if os.path.isdir(patch_dataroot_trainB):
+            bbox_fid = compute_bbox_fid(
+                patch_dataroot_trainB,
+                os.path.join(out_dir, "crops_translated"),
+                device,
+            )
+            print(f"[ENH] Bbox FID: {bbox_fid:.4f}")
+            summary_path = os.path.join(out_dir, "viz", "summary.json")
+            with open(summary_path) as f:
+                summary = json.load(f)
+            summary["bbox_fid"] = bbox_fid
+            with open(summary_path, "w") as f:
+                json.dump(summary, f, indent=2)
+
+        for d in ("test_frames", "composited_frames", "crops_translated"):
+            shutil.rmtree(os.path.join(out_dir, d), ignore_errors=True)
+        for p in glob.glob(os.path.join(out_dir, "test_patches", "*.jpg")):
+            os.remove(p)
+
+    return metrics
 
 
 # ---------------------------------------------------------------------------
