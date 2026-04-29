@@ -1,0 +1,45 @@
+[1.1 Human Patch Extraction]
+
+Score: 8/10
+
+Overall, the student has presented an outstanding solution for Q1.1 on human patch extraction. The proposed method extracts the human patches accurately. The background is included in the extracted patches, which may distract downstream systems. The proposed method incorporates some very well designed engineering and techniques, facilitating better results.
+
+
+
+[1.2 Classification]
+
+Score: 13.5/15
+
+As for Q1.2 classification, the student has presented a perfect solution. The proposed method generally classifies the human patches into the required classes. The effectiveness of the presented method can be further improved. A customised deep learning method has been developed for classification, showcasing the student's ability to adapt knowledge learned in this module for a new task. Poses are extracted to enhance the classification accuracy, and an advanced pose estimation algorithm has been employed.
+
+
+
+[1.3 Training Data Selection]
+
+Score: 15/15
+
+For the question Q1.3 training data selection, the student has presented a perfect solution. The proposed method selects high-quality data using multiple heuristics. Data bias has been considered during data selection, allowing the selected data to be as diverse as possible. Data quality has formed a part of the consideration when selecting training data, allowing the data used in later tasks to be more reliable.
+
+
+
+[2.1 Image Model Deployment]
+
+Score: 17/20
+
+Overall, the student has presented an outstanding solution for Q2.1 on image model deployment. The proposed CUT-based model is correctly implemented and applied in both directions, with strong use of quantitative metrics including FID, KID, and LPIPS to support evaluation. The student demonstrates a clear understanding of model behaviour, including identifying domain gap issues from the pre-trained initialisation and analysing performance differences between directions. However, the effectiveness can be further improved. The model performance remains constrained by the domain mismatch and limited fine-tuning, and further exploration of more suitable pre-training or extended training strategies would strengthen the results.
+
+
+
+[2.2 Local (Temporal) Enhancement]
+
+Score: 26.5/30
+
+For Q2.2 local (temporal) enhancement, the student has presented an excellent solution. The proposed pipeline effectively integrates human patch extraction, ST-GCN-based filtering, patch-level style transfer, and temporal smoothing, demonstrating a strong system-level design. Quantitative improvements are clearly shown using FID, KID, and LPIPS, indicating consistent gains over the baseline. The student also provides meaningful analysis of both success and failure cases, including limitations due to dataset imbalance. However, the effectiveness can be further improved. While temporal consistency is enhanced through smoothing, the approach remains partially heuristic, and more advanced temporal modelling could further improve performance.
+
+
+
+[3 Marks for Good Scientific Report Writing ]
+
+Score: 10/10
+
+The report writing is perfect. The organisation is easy to follow, with relevant visualisation to support the discussion in the report. A high-quality list of references is provided.
