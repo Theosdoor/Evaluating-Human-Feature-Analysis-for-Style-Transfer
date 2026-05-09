@@ -2,8 +2,6 @@
 
 This file provides guidance to coding agents when working with code in this repository.
 
-> **Also read:** [`paper/AGENTS.md`](paper/AGENTS.md) for paper-writing rules.
-
 ---
 
 ## Project Overview
@@ -26,10 +24,12 @@ Deep learning pipeline to enhance the visual quality of humans in game videos us
 ## Environment Setup
 
 ```bash
-uv sync && source .venv/bin/activate
 bash scripts/install_externals.sh   # downloads DINOv2 checkpoint + clones CUT fork
+uv sync && source .venv/bin/activate
 python3 nb_main.py                  # run the full pipeline
 ```
+
+**Note:** `scripts/install_externals.sh` must be run BEFORE `uv sync` because the CUT fork is a `uv` workspace member.
 
 **Python version:** 3.12 (enforced via `.python-version`)
 **Package manager:** `uv` (lock file: `uv.lock`)
@@ -46,9 +46,14 @@ DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 ## Repository Layout
 
 ```
-ACV_cswk/
-├── nb_main.py                  # Main pipeline orchestrator (submit as .ipynb)
-├── src/
+features-for-style-transfer/
+├── nb_main.py                  # Main pipeline orchestrator
+├── main.ipynb                  # Main pipeline (submitted format)
+├── FEEDBACK.md                 # Marker feedback for all sections
+├── report.pdf                  # Final submission report
+├── pyproject.toml              # Project configuration (uv)
+├── uv.lock                     # Lockfile
+├── src/                        # Core source code
 │   ├── feat_extract.py         # Q1.1 — extract human patches from video
 │   ├── classification.py       # Q1.2 — rule-based pose classifier (5 classes)
 │   ├── gcn.py                  # Q1.2 extension — PoseGCN classifier
@@ -57,7 +62,7 @@ ACV_cswk/
 │   ├── baseline_model.py       # Q2.1 — CUT fine-tune on full frames
 │   ├── enhanced_model.py       # Q2.2 — patch-level compositing + temporal blend
 │   └── utils.py                # Shared: video I/O, CUT wrapper, dir naming
-├── scripts/
+├── scripts/                    # Utility and training scripts
 │   ├── train_gcn.py            # Offline GCN training (run on HPC)
 │   ├── annotate.py             # Flask annotation tool for manual labelling
 │   ├── figure_select.py        # Interactive figure selection for paper
@@ -66,27 +71,11 @@ ACV_cswk/
 │   ├── sample4submit.py        # Extract sample images for submission
 │   └── install_externals.sh    # Download DINOv2 + clone CUT fork
 ├── paper/                      # LaTeX report (NeurIPS 2025 format)
-│   ├── main.tex
-│   ├── Makefile
-│   ├── ref.bib
-│   ├── sections/
-│   │   ├── human_feature_analysis.tex   # Q1.x sections
-│   │   └── real_world_application.tex   # Q2.x sections
-│   └── figs/                   # Figures for paper (PDF/PNG preferred)
-├── external/
-│   └── contrastive-unpaired-translation/   # Forked CUT repo (uv workspace member)
+├── examples/                   # Visual examples and baseline/enhanced comparisons
 ├── checkpoints/                # GCN model checkpoints (gcn_model_<run>.pt)
-├── models/                     # YOLO and DINOv2 weights
-├── downloaded_data/            # Videos — NOT committed
-│   ├── Train/game/MafiaVideogame.mp4
-│   ├── Train/movie/{TheGodfather,TheIrishman,TheSopranos}.mp4
-│   └── Test/Test.mp4
-├── output/                     # All generated artefacts — NOT committed
-├── figures/                    # Standalone figures (e.g. ablation plots)
-├── cswk_notes/                 # Assignment notes — DO NOT EDIT
-├── pyproject.toml
-├── uv.lock
-├── .env.example
+├── external/                   # Git-ignored: cloned CUT repository
+├── downloaded_data/            # Git-ignored: .mp4 videos
+├── output/                     # Git-ignored: generated artefacts and results
 └── AGENTS.md
 ```
 
@@ -208,38 +197,6 @@ The CUT repo is a **uv workspace member** (`pyproject.toml → [tool.uv.workspac
 
 ---
 
-## Paper
-
-Build with:
-
-```bash
-make -C paper          # → paper/build/main.pdf
-make -C paper clean    # wipe artefacts
-```
-
-Always build after editing `.tex` files to catch errors. Do **not** commit `paper/build/`.
-
-Use **British spelling** throughout (normalisation, prioritise, colour, analyse, etc.). The project `.vscode/settings.json` sets `cSpell.language` to `en-GB`.
-
-**Word limits (examiners stop reading at the limit):**
-
-| Section | Max words |
-|---------|-----------|
-| 1.1 | 100 |
-| 1.2 | 100 |
-| 1.3 | 100 |
-| 2.1 | 250 |
-| 2.2 | 250 |
-
-Included in count: prose, in-text citations, footnotes.
-Excluded: diagrams, tables, equations, abstract, bibliography, appendices.
-
-Figures go in `paper/figs/`; reference with relative paths (e.g. `figs/my_fig.pdf`).
-
-**Marks require hardware and training time** — be explicit about what GPU was used and how long training took. Marks are not awarded for raw compute.
-
----
-
 ## What NOT to Do
 
 - Do **not** edit files in `cswk_notes/`
@@ -247,14 +204,3 @@ Figures go in `paper/figs/`; reference with relative paths (e.g. `figs/my_fig.pd
 - Do **not** reimplement the suffix-increment logic for classification dirs — use `get_next_reclassify_dir`
 - Do **not** push `.mp4` files or model checkpoints
 - Do **not** modify `paper/neurips_2025.sty`
-
----
-
-## Submission Checklist
-
-- [ ] `nb_main.py` converted to `.ipynb` and placed in repo root
-- [ ] Auto-download lines present for DINOv2 and CUT (`wget`, `git clone`)
-- [ ] All media compressed; no raw `.mp4` files included
-- [ ] Paper PDF compiled and included alongside code ZIP
-- [ ] Hardware used and training time documented in report
-- [ ] All external code, models, and datasets cited in report and notebook comments
