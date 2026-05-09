@@ -1,7 +1,7 @@
 [project]
 name = "features-for-style-transfer"
 version = "0.1.0"
-description = "Add your description here"
+description = "Deep learning pipeline to enhance human visual quality in game videos using movie-referenced local image-to-image translation (CUT/CycleGAN) and pose-based patch extraction."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

@@ -8,7 +8,7 @@ Deep learning pipeline to enhance the visual quality of humans in game videos us
 
 ```bash
 # 1. Clone the repo
-git clone <repo-url> && cd ACV_cswk
+git clone <repo-url> && cd features-for-style-transfer
 
 # 2. Download external dependencies (CUT fork + DINOv2 checkpoint)
 #    Must run BEFORE uv sync — CUT fork is a uv workspace member
@@ -43,7 +43,7 @@ Each stage can be skipped by setting `RELOAD_*` variables in `nb_main.py` to a p
 | `downloaded_data/Train/movie/TheSopranos.mp4` | 0:28:43 | 121 MB | 1280×720 | 30.00 | 51,714 | movie |
 | `downloaded_data/Test/Test.mp4` | 0:01:10 | 17 MB | 1280×720 | 30.00 | 2,114 | game |
 
-Videos live in `downloaded_data/` (git-ignored). Never commit `.mp4` files.
+Videos live in `downloaded_data/` (git-ignored).
 
 ## Utility Scripts
 
@@ -56,10 +56,3 @@ Videos live in `downloaded_data/` (git-ignored). Never commit `.mp4` files.
 | `scripts/run_m2g_inference.py` | Re-run CUT inference in movie→game direction using cached checkpoints |
 | `scripts/sample4submit.py` | Extract sample images from output for submission |
 | `scripts/install_externals.sh` | Download DINOv2 checkpoint + clone CUT fork |
-
-## Paper
-
-```bash
-make -C paper          # → paper/build/main.pdf
-make -C paper clean    # wipe build artefacts
-```
