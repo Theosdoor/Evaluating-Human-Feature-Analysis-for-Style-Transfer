@@ -1,10 +1,8 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents when working with code in this repository.
 
-AI assistant guide for the ACV (Advanced Computer Vision) coursework repository.
-
-> **Also read:** [`paper/AGENTS.md`](paper/AGENTS.md) for paper-writing rules. You may **read** files in `cswk_notes/` but do **not** edit them.
+> **Also read:** [`paper/AGENTS.md`](paper/AGENTS.md) for paper-writing rules.
 
 ---
 
