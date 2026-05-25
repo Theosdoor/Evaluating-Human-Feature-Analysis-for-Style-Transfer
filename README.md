@@ -5,6 +5,11 @@
 
 Deep learning pipeline to enhance the visual quality of humans in game videos using movie footage as reference. Uses unpaired image-to-image translation (CUT) applied locally to human patches extracted via YOLO detection and pose-based classification.
 
+![Sampled Style Transfer|200](https://github.com/Theosdoor/features-for-style-transfer/blob/main/features-for-style-transfer.png)
+> Figure 10: Game → movie: comparison between original (left), 2.1 baseline (center) and 2.2 enhanced
+pipeline (right). In these frames, the enhanced method effectively targets the people in the frames,
+whereas the baseline method creates a blur with green tinge.
+
 ## Getting Started
 
 ```bash
